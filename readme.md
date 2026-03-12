@@ -27,7 +27,7 @@ While it integrates natively with **Home Assistant** using MQTT, it intentionall
 * **KinCony KC868-A8v3 (ESP32-S3):** The main PLC. Utilizes its onboard PCF8575 I2C expander to drive 8 localized relays, which act as the pilot switches for the heavy external hardware. Also houses the onboard DS3231 RTC for offline scheduling.
 * **Custom Sensor Breakout Board:** A perfboard circuit managing the 3.3V power distribution, digital decoupling capacitors, and the 10kΩ pull-up voltage divider required for the analog water thermistor.
 
-### Low Voltage Power & Switching
+### Power & Switching
 * **24VDC Power Supply:** Provides clean DC power to the KinCony PLC and drives the coils of the high-voltage relays.
 * **5x Omron G7L DPST 25A Relays (24VDC Coils):** Industrial-grade contactors responsible for physically switching the 120V/240V AC loads. Driven safely via the KinCony's onboard relays.
 * **TIB100A 24VAC 96VA Transformer:** A heavy-duty step-down transformer dedicated strictly to powering the pool valve actuators.

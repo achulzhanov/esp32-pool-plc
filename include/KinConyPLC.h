@@ -3,9 +3,56 @@
 
 #include <Arduino.h>
 #include <Wire.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <RTClib.h>
+
+// Index 0-7 maps to PCF8575 pins P0-P7
+enum class PoolRelay : uint8_t {
+    FilterPump = 0,      // Relay 1 (24VDC)
+    AuxPump = 1,         // Relay 2 (24VDC)
+    VacuumPump = 2,      // Relay 3 (24VDC)
+    SpaBlower = 3,       // Relay 4 (24VDC)
+    PoolLights = 4,      // Relay 5 (24VDC)
+    IntakeActuator = 5,  // Relay 6 (24VAC)
+    ReturnActuator = 6,  // Relay 7 (24VAC)
+    HeaterIgniter = 7    // Relay 8 (Fireman switch)
+};
 
 class KinConyPLC {
+public:
+    KinConyPLC();
+    ~KinConyPLC();
 
+    static constexpr uint8_t PIN_I2C_SDA = 8;
+    static constexpr uint8_t PIN_I2C_SCL = 18;
+    static constexpr uint8_t I2C_ADDR_PCF8575 = 0x22;
+    static constexpr uint8_t I2C_ADDR_DS3231 = 0x68;
+    static constexpr uint8_t I2C_ADDR_EEPROM = 0x50;
+
+    static constexpr uint8_t PIN_ANALOG_WATER = 7; // A1
+    static constexpr uint8_t PIN_1WIRE_AIR = 40;   // S1
+
+    static constexpr uint8_t PIN_ETH_CLK = 1;
+    static constexpr uint8_t PIN_ETH_MOSI = 2;
+    static constexpr uint8_t PIN_ETH_MISO = 41;
+    static constexpr uint8_t PIN_ETH_CS = 42;
+    static constexpr uint8_t PIN_ETH_INT = 43;
+    static constexpr uint8_t PIN_ETH_RST = 44;
+
+    void begin();
+    void setRelay(PoolRelay relay, bool state);
+    float getWaterTemp();
+    float getAirTemp();
+    DateTime getCurrentTime();
+
+private:
+    uint16_t _currentRelayState; // 16-bit PCF8575 I2C expander
+    OneWire _oneWire;
+    DallasTemperature _airSensor;
+    RTC_DS3231 _rtc;
+
+    void writeI2C(uint16_t data);
 };
 
 #endif

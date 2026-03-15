@@ -17,23 +17,16 @@ NetworkManager::NetworkManager() : _currentState(NetState::DISCONNECTED) {
 void NetworkManager::begin() {
     WiFi.onEvent(networkEventCallback);
     _prefs.begin("network", false);
+    _bootTime = millis();
+    _hasConnectedOnce = false;
     Serial.println("System Boot: Attempting initial network connection...");
     // If no credentials exist, go straight to AP mode
     if (getSavedSSID().empty()) {
         startCaptivePortal();
         return;
     }
-    // Network outage - retry connection for 5 minutes before starting AP
-    unsigned long startAttemptTime = millis();
-    while (millis() - startAttemptTime < 300000) {
-        if (attemptEthernet() || attemptWiFi()) {
-            return;
-        }
-        Serial.println("Reconnect unsuccessful. Retrying...");
-        delay(5000);
-    }
-    // Assume password changed or network is down, start AP mode
-    startCaptivePortal();
+    attemptEthernet();
+    attemptWiFi();
 }
 
 void NetworkManager::loop() {
@@ -42,21 +35,20 @@ void NetworkManager::loop() {
     if (_currentState == NetState::AP_MODE) {
         dnsServer.processNextRequest();
     }
-    // If disconnected, retry connection endlessly (unless rebooted)
     if (_currentState == NetState::DISCONNECTED) {
+        // 5-minute initial boot grace period
+        if (!_hasConnectedOnce && (millis() - _bootTime > 300000)) {
+            Serial.println("Network connection grace period expired. Starting AP mode...");
+            startCaptivePortal();
+            return;
+        }
+        // If disconnected, retry connection endlessly (unless rebooted)
         static unsigned long lastReconnectAttempt = 0;
-        if (millis() - lastReconnectAttempt > 10000) {
+        if (millis() - lastReconnectAttempt > 20000) {
             lastReconnectAttempt = millis();
             Serial.println("Network connection lost. Attempting to reconnect...");
-            if (attemptEthernet()) {
-                Serial.println("Reconnected successfully via Ethernet.");
-                return;
-            }
-            if (attemptWiFi()) {
-                Serial.println("Reconnected successfully via WiFi.");
-                return;
-            }
-            Serial.println("Reconnect unsuccessful. Retrying in 10 seconds...");
+            attemptEthernet();
+            attemptWiFi();
         }
     }
 }
@@ -106,18 +98,11 @@ bool NetworkManager::attemptEthernet() {
     SPI.begin(PIN_ETH_CLK, PIN_ETH_MISO, PIN_ETH_MOSI, PIN_ETH_CS);
     // Start ETH library by passing W5500 PHY type and SPI object
     bool ethStarted = ETH.begin(ETH_PHY_W5500, 1, PIN_ETH_CS, PIN_ETH_INT, PIN_ETH_RST, SPI);
-    if (ethStarted) {
-        // Give DHCP server time to assign IP
-        delay(2000);
-        if (ETH.linkUp()) {
-            Serial.print("Ethernet connected! IP: ");
-            Serial.println(ETH.localIP());
-            _currentState = NetState::ETH_CONNECTED;
-            return true;
-        }
+    if (!ethStarted) {
+        Serial.println("Ethernet hardware failed to initialize.");
+        return false;
     }
-    Serial.println("Ethernet failed to connect.");
-    return false;
+    return true;
 }
 
 bool NetworkManager::attemptWiFi() {
@@ -132,20 +117,7 @@ bool NetworkManager::attemptWiFi() {
     // Switch WiFi to station mode
     WiFi.mode(WIFI_STA);
     WiFi.begin(savedSSID.c_str(), savedPass.c_str());
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-        delay(500);
-        Serial.print(".");
-        attempts++;
-    }
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("\nWiFi connected! IP: ");
-        Serial.println(WiFi.localIP());
-        _currentState = NetState::WIFI_CONNECTED;
-        return true;
-    }
-    Serial.println("\nWiFi failed to connect.");
-    return false;
+    return true;
 }
 
 void NetworkManager::startCaptivePortal() {
@@ -165,11 +137,27 @@ void NetworkManager::networkEventCallback(WiFiEvent_t event) {
     switch (event) {
         case ARDUINO_EVENT_ETH_DISCONNECTED:
             Serial.println("Ethernet disconnected.");
-            globalNetMgr->_currentState = NetState::DISCONNECTED;
+            if (globalNetMgr->_currentState != NetState::WIFI_CONNECTED) {
+                globalNetMgr->_currentState = NetState::DISCONNECTED;
+            }
             break;
         case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
             Serial.println("WiFi disconnected.");
-            globalNetMgr->_currentState = NetState::DISCONNECTED;
+            if (globalNetMgr->_currentState != NetState::ETH_CONNECTED) {
+                globalNetMgr->_currentState = NetState::DISCONNECTED;
+            }
+            break;
+        case ARDUINO_EVENT_ETH_GOT_IP:
+            Serial.print("Ethernet connected! IP: ");
+            Serial.println(ETH.localIP());
+            globalNetMgr->_currentState = NetState::ETH_CONNECTED;
+            globalNetMgr->_hasConnectedOnce = true;
+            break;
+        case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+            Serial.print("WiFi connected! IP: ");
+            Serial.println(WiFi.localIP());
+            globalNetMgr->_currentState = NetState::WIFI_CONNECTED;
+            globalNetMgr->_hasConnectedOnce = true;
             break;
         default:
             break;

@@ -42,6 +42,9 @@ private:
     };
     NetState _currentState;
 
+    unsigned long _bootTime = 0;
+    bool _hasConnectedOnce = false;
+
     bool attemptEthernet();
     bool attemptWiFi();
     void startCaptivePortal();

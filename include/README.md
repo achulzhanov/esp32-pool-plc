@@ -32,7 +32,7 @@ The `networkEventCallback` function is triggered by the ESP32's underlying FreeR
 The network logic is designed to survive unstable grids and power flickers without stranding the pool controller offline:
 * **Grace Period:** At boot, if the controller cannot find the router, it will enter a 5-minute retry window. This accounts for scenarios where the ESP32 boots in 2 seconds, but a standard home router takes several minutes to establish a Wi-Fi network after a power outage.
 * **Captive Portal:** If (and only if) the 5-minute boot grace period expires without a connection, the controller assumes the network credentials have changed or the network is otherwise unavailable and spins up the SoftAP Captive Portal.
-* **Background Auto-Recovery:** If the network drops *after* a successful boot, the controller does not enter AP Mode. It silently drops to the `DISCONNECTED` state and attempts a non-blocking reconnection cycle every 10 seconds until the router returns, ensuring the physical pool logic is never interrupted.
+* **Background Auto-Recovery:** If the network drops *after* a successful boot, the controller does not enter AP Mode. It silently drops to the `DISCONNECTED` state and attempts a non-blocking reconnection cycle every 20 seconds until the router returns, ensuring the physical pool logic is never interrupted.
 
 #### 4. W5500 SPI Ethernet (Core 3.x)
 The KinCony board utilizes a W5500 hardware Ethernet chip. To maintain compatibility with Arduino ESP32 Core 3.x, the SPI bus is initialized globally with custom pins (`SPI.begin()`) before being passed into the native `ETH.begin()` function. Do not attempt to use the legacy `arduino-libraries/Ethernet` package, as the native `<ETH.h>` library provides vastly superior RTOS integration.

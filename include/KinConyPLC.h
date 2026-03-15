@@ -6,6 +6,7 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <RTClib.h>
+#include <Preferences.h>
 
 // Index 0-7 maps to PCF8575 pins P0-P7
 enum class PoolRelay : uint8_t {
@@ -42,7 +43,10 @@ public:
 
     void begin();
     void setRelay(PoolRelay relay, bool state);
-    float getWaterTemp();
+    bool getRelayState(PoolRelay relay) const;
+    float getWaterTemp() const;
+    void setWaterTempOffset(float offset);
+    float getWaterTempOffset() const;
     float getAirTemp();
     DateTime getCurrentTime();
 
@@ -51,7 +55,8 @@ private:
     OneWire _oneWire;
     DallasTemperature _airSensor;
     RTC_DS3231 _rtc;
-
+    Preferences _prefs;
+    float _waterTempOffset = 0.0;
     void writeI2C(uint16_t data);
 };
 

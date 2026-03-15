@@ -29,17 +29,9 @@ public:
     static constexpr uint8_t PIN_I2C_SCL = 18;
     static constexpr uint8_t I2C_ADDR_PCF8575 = 0x22;
     static constexpr uint8_t I2C_ADDR_DS3231 = 0x68;
-    static constexpr uint8_t I2C_ADDR_EEPROM = 0x50;
 
     static constexpr uint8_t PIN_ANALOG_WATER = 7; // A1
     static constexpr uint8_t PIN_1WIRE_AIR = 40;   // S1
-
-    static constexpr uint8_t PIN_ETH_CLK = 1;
-    static constexpr uint8_t PIN_ETH_MOSI = 2;
-    static constexpr uint8_t PIN_ETH_MISO = 41;
-    static constexpr uint8_t PIN_ETH_CS = 42;
-    static constexpr uint8_t PIN_ETH_INT = 43;
-    static constexpr uint8_t PIN_ETH_RST = 44;
 
     void begin();
     void setRelay(PoolRelay relay, bool state);

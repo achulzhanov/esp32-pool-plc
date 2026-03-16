@@ -20,6 +20,30 @@ The enum is explicitly packed into a `uint8_t` (1 byte) to conserve RAM, as we o
 
 ---
 
+### `PoolLogic.h` (Equipment Control Logic & Scheduling)
+
+#### 1. The 3-Tier Authority Model (`SystemMode`)
+To ensure the system is physically safe to maintain while allowing for home automation flexibility, control authority is strictly tiered:
+* **Tier 1: Service Mode (`SERVICE`)** - Reserved for the Web Admin. This mode completely halts the `loop()` state machine. Schedules, timeouts, and thermostats are ignored. Hardware is directly manipulated via `setServiceRelay()` to safely isolate equipment for maintenance, while maintaining critical safety interlocks.
+* **Tier 2: User Overrides (`USER_OVERRIDE`)** - Reserved for day-to-day user commands (e.g., via Home Assistant). These commands are strictly bound by timeouts (e.g., "Turn on Spa for 120 minutes"). Users cannot command the pool to turn `OFF`, ensuring the baseline filtration schedule is protected from errant MQTT payloads.
+* **Tier 3: Automation (`AUTO`)** - The baseline state. Evaluates the RTC clock against user-defined schedules and temperature hysteresis.
+
+#### 2. Calculated Dependencies vs. Independent Accessories
+Not all relays are treated equally in the logic funnel:
+* **Independent Accessories:** The Pool Lights, Spa Blower, and Fountain can be toggled blindly without affecting the rest of the pool plumbing.
+* **Calculated Dependencies:** The **Filter Pump** is the engine of the entire system. It does not have a simple ON/OFF variable. Instead, its state is dynamically calculated at the very end of the logic loop (`pumpON = _freezeModeActive || isSpa || _vacuumState || isFilterScheduled`). This guarantees the pump provides water flow whenever a dependent accessory demands it, preventing hardware damage.
+
+#### 3. Parallel Execution ("Masking" Technique)
+To allow a user to turn on the pool lights at 6:00 PM without accidentally pausing the filter pump's 8:00 AM to 8:00 PM schedule, schedules and user overrides execute in parallel. 
+When a user overrides an accessory, an expiration timer (`_overrideEnd > 0`) acts as a "mask." The schedule evaluator sees this mask and temporarily ignores that specific accessory, while continuing to evaluate the schedules for the rest of the system. Once the override expires, the mask is zeroed out, and the schedule seamlessly resumes control.
+
+#### 4. Failsafes & Safety Interlocks
+* **Heater & Vacuum Interlocks:** The logic actively predicts water flow. The gas heater and the pressure-side vacuum booster pump are mathematically forbidden from turning ON unless the main Filter Pump is also commanded ON, preventing dry-firing and melted shaft seals.
+* **Freeze Protection:** If the air temperature drops below the setpoint, the logic bypasses all schedules to force the Filter, Vacuum, and Aux pumps ON to continuously circulate water through the exposed equipment pad. Firing the heater is explicitly avoided during freeze protection to prevent acidic condensation and heat exchanger damage from near-freezing water.
+* **Network Fallback:** If the system is currently executing a User Override (e.g., Spa Mode) and the network connection drops, the controller instantly cancels the override and reverts to `AUTO` mode. This guarantees that an accessory won't get stuck running indefinitely if your network hardware crashes and you lose the ability to turn off equipment via Home Assistant.
+
+---
+
 ### `NetworkManager.h` (Network Stack)
 
 #### 1. Standard C++ Memory Safety (`std::string`)

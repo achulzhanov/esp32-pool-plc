@@ -1,6 +1,6 @@
 #include "PoolLogic.h"
 
-PoolLogic::PoolLogic(KinConyPLC& plc, NetworkManager& netMgr)
+PoolLogic::PoolLogic(KinConyPLC& plc, PoolNetworkManager& netMgr)
     : _plc(plc), _netMgr(netMgr), _currentMode(SystemMode::AUTO),
       _currentWaterMode(WaterMode::POOL), _targetTempPool(80.0), _targetTempSpa(100.00),
       _freezeProtectTemp(35.0), _fountainState(false), _vacuumState(false),

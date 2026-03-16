@@ -1,20 +1,20 @@
-#include "NetworkManager.h"
+#include "PoolNetworkManager.h"
 #include <SPI.h>
 #include <DNSServer.h>
 using std::string;
 
 // Static pointer so static hardware callback can access the class variables
-static NetworkManager* globalNetMgr = nullptr;
+static PoolNetworkManager* globalNetMgr = nullptr;
 
 // Captive portal DNS server
 const byte DNS_PORT = 53;
 DNSServer dnsServer;
 
-NetworkManager::NetworkManager() : _currentState(NetState::DISCONNECTED) {
+PoolNetworkManager::PoolNetworkManager() : _currentState(NetState::DISCONNECTED) {
     globalNetMgr = this; // Bind instance to global pointer
 }
 
-void NetworkManager::begin() {
+void PoolNetworkManager::begin() {
     WiFi.onEvent(networkEventCallback);
     _prefs.begin("network", false);
     _bootTime = millis();
@@ -29,7 +29,7 @@ void NetworkManager::begin() {
     attemptWiFi();
 }
 
-void NetworkManager::loop() {
+void PoolNetworkManager::loop() {
     // If broadcasting captive portal, continuously process DNS requests to
     // automatically open login page
     if (_currentState == NetState::AP_MODE) {
@@ -53,46 +53,46 @@ void NetworkManager::loop() {
     }
 }
 
-bool NetworkManager::isConnected() {
+bool PoolNetworkManager::isConnected() {
     return (_currentState == NetState::ETH_CONNECTED || _currentState == NetState::WIFI_CONNECTED);
 }
 
-bool NetworkManager::isEthernet() {
+bool PoolNetworkManager::isEthernet() {
     return (_currentState == NetState::ETH_CONNECTED);
 }
 
-bool NetworkManager::isWiFi() {
+bool PoolNetworkManager::isWiFi() {
     return (_currentState == NetState::WIFI_CONNECTED);
 }
 
-bool NetworkManager::isAPmode() {
+bool PoolNetworkManager::isAPmode() {
     return (_currentState == NetState::AP_MODE);
 }
 
-string NetworkManager::getSavedSSID() {
+string PoolNetworkManager::getSavedSSID() {
     // Preferences returns Arduino String, extract c_str() to build std::string
     return string(_prefs.getString("ssid", "").c_str());
 }
 
-void NetworkManager::setCredentials(const string& ssid, const string& password) {
+void PoolNetworkManager::setCredentials(const string& ssid, const string& password) {
     // Convert std::string back Arduino String for Preferences
     _prefs.putString("ssid", String(ssid.c_str()));
     _prefs.putString("pass", String(password.c_str()));
 }
 
-void NetworkManager::clearCredentials() {
+void PoolNetworkManager::clearCredentials() {
     _prefs.remove("ssid");
     _prefs.remove("pass");
 }
 
-void NetworkManager::reconnectWiFi() {
+void PoolNetworkManager::reconnectWiFi() {
     if (_currentState == NetState::WIFI_CONNECTED) {
         WiFi.disconnect();
     }
     attemptWiFi();
 }
 
-bool NetworkManager::attemptEthernet() {
+bool PoolNetworkManager::attemptEthernet() {
     Serial.println("Attempting Ethernet connection...");
     // Initialize global SPI bus
     SPI.begin(PIN_ETH_CLK, PIN_ETH_MISO, PIN_ETH_MOSI, PIN_ETH_CS);
@@ -105,7 +105,7 @@ bool NetworkManager::attemptEthernet() {
     return true;
 }
 
-bool NetworkManager::attemptWiFi() {
+bool PoolNetworkManager::attemptWiFi() {
     string savedSSID = getSavedSSID();
     string savedPass = string(_prefs.getString("pass", "").c_str());
     if (savedSSID.empty()) {
@@ -120,7 +120,7 @@ bool NetworkManager::attemptWiFi() {
     return true;
 }
 
-void NetworkManager::startCaptivePortal() {
+void PoolNetworkManager::startCaptivePortal() {
     Serial.println("Starting Captive Portal (AP)...");
     // Switch WiFi to AP mode
     WiFi.mode(WIFI_AP);
@@ -132,7 +132,7 @@ void NetworkManager::startCaptivePortal() {
     _currentState = NetState::AP_MODE;
 }
 
-void NetworkManager::networkEventCallback(WiFiEvent_t event) {
+void PoolNetworkManager::networkEventCallback(WiFiEvent_t event) {
     if (!globalNetMgr) return;
     switch (event) {
         case ARDUINO_EVENT_ETH_DISCONNECTED:

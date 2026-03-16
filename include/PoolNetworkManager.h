@@ -1,5 +1,5 @@
-#ifndef NETWORK_MANAGER_H
-#define NETWORK_MANAGER_H
+#ifndef POOL_NETWORK_MANAGER_H
+#define POOL_NETWORK_MANAGER_H
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -7,9 +7,9 @@
 #include <Preferences.h>
 #include <string>
 
-class NetworkManager {
+class PoolNetworkManager {
 public:
-    NetworkManager();
+    PoolNetworkManager();
 
     void begin();
     void loop();

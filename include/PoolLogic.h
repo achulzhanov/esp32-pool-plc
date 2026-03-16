@@ -4,7 +4,7 @@
 #include <Arduino.h>
 #include <Preferences.h>
 #include "KinConyPLC.h"
-#include "NetworkManager.h"
+#include "PoolNetworkManager.h"
 
 enum class SystemMode : uint8_t {
     AUTO,
@@ -29,7 +29,7 @@ struct Schedule {
 class PoolLogic {
 public:
     // Constructor takes reference to existing classes
-    PoolLogic(KinConyPLC& plc, NetworkManager& netMgr);
+    PoolLogic(KinConyPLC& plc, PoolNetworkManager& netMgr);
 
     void begin();
     void loop();
@@ -74,7 +74,7 @@ public:
 
 private:
     KinConyPLC& _plc;
-    NetworkManager& _netMgr;
+    PoolNetworkManager& _netMgr;
     Preferences _prefs;
 
     SystemMode _currentMode;

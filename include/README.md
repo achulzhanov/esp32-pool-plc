@@ -44,7 +44,7 @@ When a user overrides an accessory, an expiration timer (`_overrideEnd > 0`) act
 
 ---
 
-### `NetworkManager.h` (Network Stack)
+### `PoolNetworkManager.h` (Network Stack)
 
 #### 1. Standard C++ Memory Safety (`std::string`)
 To prevent the heap fragmentation caused by the default Arduino `String` class over long uptimes, this class utilizes the C++ STL (`#include <string>`). Conversion to Arduino `String` or C-strings (`.c_str()`) is strictly quarantined to the immediate point of hardware or Preferences API execution, allowing the variables to immediately go out of scope and free the heap.

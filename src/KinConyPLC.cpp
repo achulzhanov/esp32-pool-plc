@@ -49,12 +49,11 @@ bool KinConyPLC::getRelayState(PoolRelay relay) const {
 }
 
 void KinConyPLC::writeI2C(uint16_t data) {
-    // NEED TO TEST: PCF8575 might be active-low. If so, invert data:
-    // uint16_t invertedData = ~data;
-    // Wire.write(lowByte(invertedData));
+    // PCF8575 is active-low, so we need to invert the bits
+    uint16_t invertedData = ~data;
     Wire.beginTransmission(I2C_ADDR_PCF8575);
-    Wire.write(lowByte(data));
-    Wire.write(highByte(data));
+    Wire.write(lowByte(invertedData));
+    Wire.write(highByte(invertedData));
     Wire.endTransmission();
 }
 
@@ -97,4 +96,8 @@ float KinConyPLC::getAirTemp() {
 
 DateTime KinConyPLC::getCurrentTime() {
     return _rtc.now();
+}
+
+void KinConyPLC::setTime(const DateTime& dt) {
+    _rtc.adjust(dt);
 }

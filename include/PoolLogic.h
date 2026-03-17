@@ -102,6 +102,9 @@ private:
     unsigned long _overrideLightsEnd;
     unsigned long _overrideHeaterEnd;
 
+    unsigned long _lastTimeSync = 0;
+    void syncTime();
+
     bool isTimeInSchedule(const DateTime& now, const Schedule& sched) const;
     void evaluateSafetyInterlocks();
     void evaluateOverrideTimeouts();

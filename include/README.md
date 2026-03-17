@@ -13,7 +13,10 @@ While this board only has 8 physical relays, the variable tracking their state i
 The relays are driven by a **PCF8575 I2C I/O Expander**. This specific microchip is a 16-bit device. Pins `P0-P7` drive the relays, while pins `P8-P15` are wired to the digital inputs. 
 To prevent accidentally overwriting or disabling the digital inputs when toggling a relay, the software must read, mask, and transmit a full 16-bit payload during every I2C transaction. Do not reduce this variable to an 8-bit integer.
 
-#### 2. Strict Type Safety (`enum class PoolRelay : uint8_t`)
+#### 2. Active-Low Hardware Bonudary
+The relays on the KinCony board driven by the PCF8575 I2C Expander are active-low logic (a `LOW` signal energizes the coil). To keep the high-level `PoolLogic` intuitive, the bitwise NOT operator (`~`) is applied exclusively inside the hardware boundary (`writeI2C`) at the exact moment of transmission. This ensures default initializations (e.g., `0x0000`) safely translate to all pins being driven `HIGH` (off) at boot.
+
+#### 3. Strict Type Safety (`enum class PoolRelay : uint8_t`)
 To prevent magic numbers and out-of-bounds relay calls, the relays are strictly mapped using an `enum class`.
 If you change the physical wiring of your high-voltage contactors or 24VAC actuators, you **must** update the names in the `PoolRelay` enum to match your new layout. 
 The enum is explicitly packed into a `uint8_t` (1 byte) to conserve RAM, as we only need to map indexes 0 through 7.
@@ -60,6 +63,21 @@ The network logic is designed to survive unstable grids and power flickers witho
 
 #### 4. W5500 SPI Ethernet (Core 3.x)
 The KinCony board utilizes a W5500 hardware Ethernet chip. To maintain compatibility with Arduino ESP32 Core 3.x, the SPI bus is initialized globally with custom pins (`SPI.begin()`) before being passed into the native `ETH.begin()` function. Do not attempt to use the legacy `arduino-libraries/Ethernet` package, as the native `<ETH.h>` library provides vastly superior RTOS integration.
+
+---
+
+### `PoolWebServer.h` (API & User Interface)
+
+#### 1. Single Port Authority & Mode Awareness
+To prevent TCP port conflicts, `PoolWebServer` has exclusive ownership of Port 80. The server relies on a strict Mode-Aware architecture, checking `WiFi.getMode()` upon receiving a request:
+* **AP Mode (Captive Portal):** If the ESP32 is broadcasting its own network, the server traps all incoming mobile requests (e.g., `/generate_204`, `/ncsi.txt`) via an `onNotFound` handler and issues a 302 Redirect to the `/wifi-setup` configuration page.
+* **STA Mode (REST API & UI):** Once connected to a router, the setup form is hidden, and the server transitions to serving the Web Admin UI and handling JSON API payloads.
+
+#### 2. Network Boundary Handoff
+While the Web Server utilizes Arduino `String` objects (inherent to the `WebServer` library) to parse HTTP bodies and form arguments, these objects are instantly converted to `std::string` at the boundary before being passed to the `PoolNetworkManager` to prevent heap fragmentation.
+
+#### 3. MQTT Quarantine & Initialization
+The `PubSubClient` (MQTT) is inherently unstable if instantiated without an active network socket. To prevent `LoadProhibited` null-pointer CPU crashes, the MQTT client and state-publishing functions are strictly quarantined and bypassed unless `WiFi.status() == WL_CONNECTED` returns true.
 
 ---
 

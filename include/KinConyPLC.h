@@ -41,6 +41,7 @@ public:
     float getWaterTempOffset() const;
     float getAirTemp();
     DateTime getCurrentTime();
+    void setTime(const DateTime& dt);
 
 private:
     uint16_t _currentRelayState; // 16-bit PCF8575 I2C expander

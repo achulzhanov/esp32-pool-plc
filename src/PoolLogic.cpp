@@ -1,3 +1,4 @@
+#include <time.h>
 #include "PoolLogic.h"
 
 PoolLogic::PoolLogic(KinConyPLC& plc, PoolNetworkManager& netMgr)
@@ -8,12 +9,16 @@ PoolLogic::PoolLogic(KinConyPLC& plc, PoolNetworkManager& netMgr)
       _freezeModeActive(false), _callForHeat(false) {}
 
 void PoolLogic::begin() {
+    // Set up the background NTP client for Central Time (US)
+    // The POSIX string "CST6CDT,M3.2.0,M11.1.0" handles Daylight Saving Time automatically forever
+    configTzTime("CST6CDT,M3.2.0,M11.1.0", "pool.ntp.org", "time.nist.gov");
     _prefs.begin("pool_settings", false);
     loadSettings();
     Serial.println("PoolLogic initialized. Defaulting to AUTO mode.");
 }
 
 void PoolLogic::loop() {
+    syncTime();
     evaluateSafetyInterlocks();
     // Service mode exits loop, web admin will call _plc.setRelay() directly
     if (_currentMode == SystemMode::SERVICE) {
@@ -236,6 +241,32 @@ void PoolLogic::overrideHeater(bool enable, uint16_t timeoutMinutes) {
 }
 
 // Schedules, thermostats, execution
+void PoolLogic::syncTime() {
+    // Only attempt to sync if we have a network connection
+    if (WiFi.status() != WL_CONNECTED) return;
+    DateTime rtcTime = _plc.getCurrentTime();
+    unsigned long currentMillis = millis();
+    // Sync if the RTC is lost in the past (e.g. year 2000) OR once every 24 hours
+    if (rtcTime.year() < 2024 || (currentMillis - _lastTimeSync > 86400000)) {
+        struct tm timeinfo;
+        if (getLocalTime(&timeinfo, 5000)) { 
+            // Convert the ESP32's internal time struct to RTClib's DateTime format
+            DateTime ntpTime(
+                timeinfo.tm_year + 1900, 
+                timeinfo.tm_mon + 1, 
+                timeinfo.tm_mday, 
+                timeinfo.tm_hour, 
+                timeinfo.tm_min, 
+                timeinfo.tm_sec
+            );
+            // Burn it into the KinCony's DS3231 chip
+            _plc.setTime(ntpTime);
+            _lastTimeSync = currentMillis;
+            Serial.print("RTC successfully synced with NTP.");
+        }
+    }
+}
+
 bool PoolLogic::isTimeInSchedule(const DateTime& now, const Schedule& sched) const {
     if (!sched.enabled) {
         return false;
@@ -399,19 +430,18 @@ void PoolLogic::loadSettings() {
     _schedFilter.endHour = _prefs.getUChar("sf_eh", 20);
     _schedFilter.endMin = _prefs.getUChar("sf_em", 0);
     // Vacuum Schedule (Default: 8:15 AM to 12:00 PM, Enabled)
+    // Staggered start up for inrush current and priming
     _schedVacuum.enabled = _prefs.getBool("sv_en", true);
     _schedVacuum.startHour = _prefs.getUChar("sv_sh", 8);
     _schedVacuum.startMin = _prefs.getUChar("sv_sm", 15);
     _schedVacuum.endHour = _prefs.getUChar("sv_eh", 12);
     _schedVacuum.endMin = _prefs.getUChar("sv_em", 0);
-
     // Lights Schedule (Default: 7:00 PM to 10:00 PM, Enabled)
     _schedLights.enabled = _prefs.getBool("sl_en", true);
     _schedLights.startHour = _prefs.getUChar("sl_sh", 19);
     _schedLights.startMin = _prefs.getUChar("sl_sm", 0);
     _schedLights.endHour = _prefs.getUChar("sl_eh", 22);
     _schedLights.endMin = _prefs.getUChar("sl_em", 0);
-    
     Serial.println("Settings successfully loaded from NVS flash memory.");
 }
 

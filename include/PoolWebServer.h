@@ -28,16 +28,18 @@ private:
     // HTTP routing
     void setupRoutes();
     void sendCORSHeaders();
-    // HTML/UI handlers
-    void handleRoot();
+    // API handlers
     void handleNotFound();
     void handleWifiSetupGet();
     void handleWifiSetupPost();
-    // REST API endpoint handlers
+    void handleSetWiFi();
     void handleGetStatus();
     void handleSetMode();
     void handleSetOverride();
     void handleSetSettings();
+    void handleGetSettings();
+    void handleServiceCommand();
+    void handleReboot();
     // MQTT helpers
     void handleMQTT();
     void publishState();

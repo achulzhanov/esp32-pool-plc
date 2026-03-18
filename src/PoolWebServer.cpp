@@ -1,4 +1,5 @@
 #include "PoolWebServer.h"
+#include "WebUI.h"
 #include <ArduinoJson.h>
 #include <WiFi.h>
 
@@ -36,33 +37,102 @@ void PoolWebServer::sendCORSHeaders() {
 }
 
 void PoolWebServer::setupRoutes() {
-    // API GET
-    _server.on("/api/status", HTTP_GET, [this]() { handleGetStatus(); });
-    // API POST
-    _server.on("/api/mode", HTTP_POST, [this]() { handleSetMode(); });
-    _server.on("/api/override", HTTP_POST, [this]() { handleSetOverride(); });
-    // CORS Preflight handlers
-    _server.on("/api/mode", HTTP_OPTIONS, [this]() { sendCORSHeaders(); _server.send(204); });
-    _server.on("/api/override", HTTP_OPTIONS, [this]() { sendCORSHeaders(); _server.send(204); });
-    // Web UI & Captive Portal
-    _server.on("/", HTTP_GET, [this]() { handleRoot(); });
+    // --- Web UI & Captive Portal ---
+    _server.on("/", HTTP_GET, [this]() {
+        // 1. Captive Portal Check
+        if (_netMgr.isAPmode()) {
+            _server.sendHeader("Location", "/wifi-setup", true);
+            _server.send(302, "text/plain", "");
+            return;
+        }
+        // 2. Normal Operation
+        _server.send(200, "text/html", index_html);
+    });
     _server.on("/wifi-setup", HTTP_GET, [this]() { handleWifiSetupGet(); });
     _server.on("/wifi-setup", HTTP_POST, [this]() { handleWifiSetupPost(); });
+    // --- API GET ---
+    _server.on("/api/status", HTTP_GET, [this]() { handleGetStatus(); });
+    _server.on("/api/settings", HTTP_GET, [this]() { handleGetSettings(); });
+    // --- API POST ---
+    _server.on("/api/mode", HTTP_POST, [this]() { handleSetMode(); });
+    _server.on("/api/override", HTTP_POST, [this]() { handleSetOverride(); });
+    _server.on("/api/service", HTTP_POST, [this]() { handleServiceCommand(); });
+    _server.on("/api/settings", HTTP_POST, [this]() { handleSetSettings(); });
+    _server.on("/api/wifi", HTTP_POST, [this]() { handleSetWiFi(); });
+    _server.on("/api/reboot", HTTP_POST, [this]() { handleReboot(); });
+    // --- CORS Preflight handlers ---
+    _server.on("/api/mode", HTTP_OPTIONS, [this]() { sendCORSHeaders(); _server.send(204); });
+    _server.on("/api/override", HTTP_OPTIONS, [this]() { sendCORSHeaders(); _server.send(204); });
+    _server.on("/api/service", HTTP_OPTIONS, [this]() { sendCORSHeaders(); _server.send(204); });
+    _server.on("/api/settings", HTTP_OPTIONS, [this]() { sendCORSHeaders(); _server.send(204); }); // NEW
+    _server.on("/api/wifi", HTTP_OPTIONS, [this]() { sendCORSHeaders(); _server.send(204); });     // NEW
+    _server.on("/api/reboot", HTTP_OPTIONS, [this]() { sendCORSHeaders(); _server.send(204); });   // NEW
+    // --- 404 / Captive Portal Catch-All ---
     _server.onNotFound([this]() { handleNotFound(); });
+}
+
+void PoolWebServer::handleSetWiFi() {
+    if (!_server.hasArg("plain")) {
+        sendCORSHeaders();
+        _server.send(400, "application/json", "{\"error\":\"Missing JSON\"}");
+        return;
+    }
+    JsonDocument doc;
+    if (deserializeJson(doc, _server.arg("plain"))) {
+        sendCORSHeaders();
+        _server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+        return;
+    }
+    String ssid = doc["ssid"] | "";
+    String pass = doc["pass"] | "";
+    if (ssid.length() > 0) {
+        // Save to ESP32 NVS using your preferred method
+        Preferences prefs;
+        prefs.begin("pool_net", false);
+        prefs.putString("ssid", ssid);
+        prefs.putString("pass", pass);
+        prefs.end();
+        sendCORSHeaders();
+        _server.send(200, "application/json", "{\"status\":\"success\"}");
+        // Give the web server 1 second to send the HTTP 200 response before pulling the plug
+        delay(1000); 
+        ESP.restart();
+    } else {
+        sendCORSHeaders();
+        _server.send(400, "application/json", "{\"error\":\"SSID cannot be empty\"}");
+    }
 }
 
 void PoolWebServer::handleGetStatus() {
     JsonDocument doc;
+    // Core States
     doc["system_mode"] = static_cast<int>(_poolLogic.getSystemMode());
     doc["water_mode"] = static_cast<int>(_poolLogic.getWaterMode());
+    doc["current_time"] = _poolLogic.getCurrentTimeString();
+    // Network Info
+    doc["ssid"] = WiFi.SSID();
+    doc["ip"] = WiFi.localIP().toString();
+    // Temperatures
+    doc["temp_air"] = _poolLogic.getAirTemp();
+    doc["temp_water"] = _poolLogic.getWaterTemp();
+    doc["target_pool_temp"] = _poolLogic.getTargetTempPool();
+    doc["target_spa_temp"] = _poolLogic.getTargetTempSpa();
     doc["freeze_protection"] = _poolLogic.isFreezeProtectionActive();
+    // User Intents
+    doc["heater_enabled"] = _poolLogic.isHeaterEnabled();
     doc["lights_on"] = _poolLogic.isLightsOn();
     doc["vacuum_on"] = _poolLogic.isVacuumOn();
     doc["fountain_on"] = _poolLogic.isFountainOn();
     doc["spa_blower_on"] = _poolLogic.isSpaBlowerOn();
-    doc["heater_active"] = _poolLogic.isHeaterActive();
-    doc["target_pool_temp"] = _poolLogic.getTargetTempPool();
-    doc["target_spa_temp"] = _poolLogic.getTargetTempSpa();
+    // Physical Hardware Truths (God Mode viewing)
+    doc["relay_filter_pump"] = _poolLogic.getRelayState(PoolRelay::FilterPump);
+    doc["relay_heater_igniter"] = _poolLogic.getRelayState(PoolRelay::HeaterIgniter);
+    doc["actuator_intake_spa"] = _poolLogic.getRelayState(PoolRelay::IntakeActuator);
+    doc["actuator_return_spa"] = _poolLogic.getRelayState(PoolRelay::ReturnActuator);
+    doc["relay_aux_pump"] = _poolLogic.getRelayState(PoolRelay::AuxPump);
+    doc["relay_spa_blower"] = _poolLogic.getRelayState(PoolRelay::SpaBlower);
+    doc["relay_pool_lights"] = _poolLogic.getRelayState(PoolRelay::PoolLights);
+    doc["relay_vacuum_pump"] = _poolLogic.getRelayState(PoolRelay::VacuumPump);
     String jsonResponse;
     serializeJson(doc, jsonResponse);
     sendCORSHeaders();
@@ -82,12 +152,10 @@ void PoolWebServer::handleSetMode() {
         _server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
         return;
     }
-    
     if (!doc["system_mode"].isNull()) {
         int mode = doc["system_mode"].as<int>();
         _poolLogic.setSystemMode(static_cast<SystemMode>(mode));
     }
-    
     sendCORSHeaders();
     _server.send(200, "application/json", "{\"status\":\"success\"}");
 }
@@ -105,45 +173,150 @@ void PoolWebServer::handleSetOverride() {
         _server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
         return;
     }
-    
     // Default timeout is 120 minutes if not provided in the JSON
     uint16_t timeout = !doc["timeout"].isNull() ? doc["timeout"].as<uint16_t>() : 120;
-    
-    if (!doc["water_mode"].isNull()) {
-        _poolLogic.overrideWaterMode(static_cast<WaterMode>(doc["water_mode"].as<int>()), timeout);
+    std::string result = "success";
+    // Cascade through the commands. If one fails a safety interlock, 
+    // it will update 'result' and skip the remaining checks.
+    if (result == "success" && !doc["water_mode"].isNull()) {
+        result = _poolLogic.overrideWaterMode(static_cast<WaterMode>(doc["water_mode"].as<int>()), timeout);
     }
-    if (!doc["lights_on"].isNull()) {
-        _poolLogic.overrideLights(doc["lights_on"].as<bool>(), timeout);
+    if (result == "success" && !doc["lights_on"].isNull()) {
+        result = _poolLogic.overrideLights(doc["lights_on"].as<bool>(), timeout);
     }
-    if (!doc["vacuum_on"].isNull()) {
-        _poolLogic.overrideVacuum(doc["vacuum_on"].as<bool>(), timeout);
+    if (result == "success" && !doc["vacuum_on"].isNull()) {
+        result = _poolLogic.overrideVacuum(doc["vacuum_on"].as<bool>(), timeout);
     }
-    if (!doc["fountain_on"].isNull()) {
-        _poolLogic.overrideFountain(doc["fountain_on"].as<bool>(), timeout);
+    if (result == "success" && !doc["fountain_on"].isNull()) {
+        result = _poolLogic.overrideFountain(doc["fountain_on"].as<bool>(), timeout);
     }
-    if (!doc["spa_blower_on"].isNull()) {
-        _poolLogic.overrideSpaBlower(doc["spa_blower_on"].as<bool>(), timeout);
+    if (result == "success" && !doc["spa_blower_on"].isNull()) {
+        result = _poolLogic.overrideSpaBlower(doc["spa_blower_on"].as<bool>(), timeout);
     }
-    if (!doc["heater_enable"].isNull()) {
-        _poolLogic.overrideHeater(doc["heater_enable"].as<bool>(), timeout);
+    if (result == "success" && !doc["heater_enable"].isNull()) {
+        result = _poolLogic.overrideHeater(doc["heater_enable"].as<bool>(), timeout);
     }
-    
+    sendCORSHeaders();
+    if (result == "success") {
+        _server.send(200, "application/json", "{\"status\":\"success\"}");
+    } else {
+        String errorJson = "{\"error\":\"" + String(result.c_str()) + "\"}";
+        _server.send(400, "application/json", errorJson);
+    }
+}
+
+void PoolWebServer::handleSetSettings() {
+    if (!_server.hasArg("plain")) {
+        sendCORSHeaders();
+        _server.send(400, "application/json", "{\"error\":\"Missing JSON body\"}");
+        return;
+    }
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, _server.arg("plain"));
+    if (error) {
+        sendCORSHeaders();
+        _server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+        return;
+    }
+    // Process Target Temps (Dashboard Tab)
+    if (!doc["target_pool_temp"].isNull()) _poolLogic.setTargetTempPool(doc["target_pool_temp"].as<float>());
+    if (!doc["target_spa_temp"].isNull()) _poolLogic.setTargetTempSpa(doc["target_spa_temp"].as<float>());
+    // Process Calibration (Settings Tab)
+    if (!doc["freeze_protect_temp"].isNull()) _poolLogic.setFreezeProtectTemp(doc["freeze_protect_temp"].as<float>());
+    if (!doc["water_temp_offset"].isNull()) _poolLogic.setWaterTempOffset(doc["water_temp_offset"].as<float>());
+    // Process Schedules (Settings Tab)
+    if (!doc["sched_filter"].isNull()) {
+        Schedule s;
+        s.startHour = doc["sched_filter"]["startHour"].as<uint8_t>();
+        s.startMin = doc["sched_filter"]["startMin"].as<uint8_t>();
+        s.endHour = doc["sched_filter"]["endHour"].as<uint8_t>();
+        s.endMin = doc["sched_filter"]["endMin"].as<uint8_t>();
+        s.enabled = doc["sched_filter"]["enabled"].as<bool>();
+        _poolLogic.setScheduleFilter(s);
+    }
+    if (!doc["sched_vacuum"].isNull()) {
+        Schedule s;
+        s.startHour = doc["sched_vacuum"]["startHour"].as<uint8_t>();
+        s.startMin = doc["sched_vacuum"]["startMin"].as<uint8_t>();
+        s.endHour = doc["sched_vacuum"]["endHour"].as<uint8_t>();
+        s.endMin = doc["sched_vacuum"]["endMin"].as<uint8_t>();
+        s.enabled = doc["sched_vacuum"]["enabled"].as<bool>();
+        _poolLogic.setScheduleVacuum(s);
+    }
+    if (!doc["sched_lights"].isNull()) {
+        Schedule s;
+        s.startHour = doc["sched_lights"]["startHour"].as<uint8_t>();
+        s.startMin = doc["sched_lights"]["startMin"].as<uint8_t>();
+        s.endHour = doc["sched_lights"]["endHour"].as<uint8_t>();
+        s.endMin = doc["sched_lights"]["endMin"].as<uint8_t>();
+        s.enabled = doc["sched_lights"]["enabled"].as<bool>();
+        _poolLogic.setScheduleLights(s);
+    }
     sendCORSHeaders();
     _server.send(200, "application/json", "{\"status\":\"success\"}");
 }
 
-void PoolWebServer::handleSetSettings() {
+void PoolWebServer::handleGetSettings() {
+    JsonDocument doc;
+    
+    // Temperatures & Calibration
+    doc["target_pool_temp"] = _poolLogic.getTargetTempPool();
+    doc["target_spa_temp"] = _poolLogic.getTargetTempSpa();
+    doc["freeze_protect_temp"] = _poolLogic.getFreezeProtectTemp();
+    doc["water_temp_offset"] = _poolLogic.getWaterTempOffset();
+    // Filter Schedule
+    JsonObject sf = doc["sched_filter"].to<JsonObject>();
+    Schedule schedF = _poolLogic.getScheduleFilter();
+    sf["startHour"] = schedF.startHour; sf["startMin"] = schedF.startMin;
+    sf["endHour"] = schedF.endHour; sf["endMin"] = schedF.endMin;
+    sf["enabled"] = schedF.enabled;
+    // Vacuum Schedule
+    JsonObject sv = doc["sched_vacuum"].to<JsonObject>();
+    Schedule schedV = _poolLogic.getScheduleVacuum();
+    sv["startHour"] = schedV.startHour; sv["startMin"] = schedV.startMin;
+    sv["endHour"] = schedV.endHour; sv["endMin"] = schedV.endMin;
+    sv["enabled"] = schedV.enabled;
+    // Lights Schedule
+    JsonObject sl = doc["sched_lights"].to<JsonObject>();
+    Schedule schedL = _poolLogic.getScheduleLights();
+    sl["startHour"] = schedL.startHour; sl["startMin"] = schedL.startMin;
+    sl["endHour"] = schedL.endHour; sl["endMin"] = schedL.endMin;
+    sl["enabled"] = schedL.enabled;
+    String response;
+    serializeJson(doc, response);
     sendCORSHeaders();
-    _server.send(501, "application/json", "{\"error\":\"Not Implemented\"}");
+    _server.send(200, "application/json", response);
 }
 
-void PoolWebServer::handleRoot() {
-    if (WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA) {
-        _server.sendHeader("Location", "/wifi-setup", true);
-        _server.send(302, "text/plain", "");
+void PoolWebServer::handleServiceCommand() {
+    if (_poolLogic.getSystemMode() != SystemMode::SERVICE) {
+        sendCORSHeaders();
+        _server.send(403, "application/json", "{\"error\":\"System must be in SERVICE mode.\"}");
         return;
     }
-    _server.send(200, "text/html", "<h1>KinCony Pool Controller</h1><p>API is active.</p>");
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, _server.arg("plain"));
+    if (error) {
+        sendCORSHeaders();
+        _server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+        return;
+    }
+    if (!doc["relay"].isNull() && !doc["state"].isNull()) {
+        int relayIdx = doc["relay"].as<int>();
+        bool state = doc["state"].as<bool>();
+        std::string result = _poolLogic.setServiceRelay(static_cast<PoolRelay>(relayIdx), state);
+        sendCORSHeaders();
+        if (result == "success") {
+            _server.send(200, "application/json", "{\"status\":\"success\"}");
+        } else {
+            // Send the specific error message back to the Web UI
+            String errorJson = "{\"error\":\"" + String(result.c_str()) + "\"}";
+            _server.send(400, "application/json", errorJson);
+        }
+    } else {
+        sendCORSHeaders();
+        _server.send(400, "application/json", "{\"error\":\"Missing relay or state\"}");
+    }
 }
 
 void PoolWebServer::handleNotFound() {
@@ -177,7 +350,6 @@ void PoolWebServer::handleWifiSetupGet() {
     </div>
     </body></html>
     )rawliteral";
-    
     _server.send(200, "text/html", html);
 }
 
@@ -185,31 +357,33 @@ void PoolWebServer::handleWifiSetupPost() {
     // The WebServer library inherently returns Arduino Strings
     String ardSsid = _server.arg("ssid");
     String ardPass = _server.arg("pass");
-    
     if (ardSsid.length() > 0) {
         String successHtml = "<h2>Credentials Saved!</h2><p>Rebooting to connect to <b>" + ardSsid + "</b>...</p>";
         _server.send(200, "text/html", successHtml);
-        
         delay(1000); // Give the ESP32 a second to actually send the HTML to the phone
-        
         // Convert to std::string right at the boundary
         std::string stdSsid = ardSsid.c_str();
         std::string stdPass = ardPass.c_str();
-        
         _netMgr.setCredentials(stdSsid, stdPass); 
-        
         Serial.println("Credentials saved. Restarting ESP32...");
         delay(500); // Brief pause to let serial buffers clear
         ESP.restart(); // Force reboot to apply new network settings
-        
-    } else {
+    }
+    else {
         _server.send(400, "text/plain", "SSID cannot be empty.");
     }
 }
 
+void PoolWebServer::handleReboot() {
+    sendCORSHeaders();
+    _server.send(200, "application/json", "{\"status\":\"rebooting\"}");
+    // Give the browser time to receive the response
+    delay(1000);
+    ESP.restart();
+}
+
 void PoolWebServer::handleMQTT() {
     if (WiFi.status() != WL_CONNECTED) return;
-    
     if (!_mqtt.connected()) {
         Serial.println("Attempting MQTT connection...");
         if (_mqtt.connect("KinConyPoolController")) {
@@ -229,7 +403,6 @@ void PoolWebServer::handleMQTT() {
 void PoolWebServer::publishState() {
     if (WiFi.status() != WL_CONNECTED) return;
     if (!_mqtt.connected()) return;
-    
     JsonDocument doc;
     doc["system_mode"] = static_cast<int>(_poolLogic.getSystemMode());
     doc["water_mode"] = static_cast<int>(_poolLogic.getWaterMode());
@@ -238,7 +411,6 @@ void PoolWebServer::publishState() {
     doc["fountain_on"] = _poolLogic.isFountainOn();
     doc["spa_blower_on"] = _poolLogic.isSpaBlowerOn();
     doc["heater_active"] = _poolLogic.isHeaterActive();
-    
     String payload;
     serializeJson(doc, payload);
     _mqtt.publish("pool/status", payload.c_str());
@@ -246,14 +418,12 @@ void PoolWebServer::publishState() {
 
 void PoolWebServer::mqttCallback(char* topic, byte* payload, unsigned int length) {
     if (!globalWebServerInstance) return;
-    
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, payload, length);
     if (error) {
         Serial.println("MQTT JSON Parse Error");
         return;
     }
-    
     if (String(topic) == "pool/command") {
         if (!doc["system_mode"].isNull()) {
             globalWebServerInstance->_poolLogic.setSystemMode(static_cast<SystemMode>(doc["system_mode"].as<int>()));
@@ -263,7 +433,6 @@ void PoolWebServer::mqttCallback(char* topic, byte* payload, unsigned int length
             globalWebServerInstance->_poolLogic.overrideSpaBlower(doc["spa_blower_on"].as<bool>(), 120);
             Serial.println("MQTT Command: Spa Blower Override");
         }
-        
         globalWebServerInstance->publishState();
     }
 }

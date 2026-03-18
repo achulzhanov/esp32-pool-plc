@@ -60,7 +60,7 @@ void KinConyPLC::writeI2C(uint16_t data) {
 // Analog read and Steinhart-Hart conversion
 float KinConyPLC::getWaterTemp() const {
     int analogValue = analogRead(PIN_ANALOG_WATER);
-    if (analogValue == 0) {
+    if (analogValue <= 10 || analogValue >= 4090) {
         return -127.0;
     }
     // Convert 12-bit ADC to resistance

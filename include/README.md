@@ -66,7 +66,7 @@ The KinCony board utilizes a W5500 hardware Ethernet chip. To maintain compatibi
 
 ---
 
-### `PoolWebServer.h` (API & User Interface)
+### `PoolWebServer.h` (REST API & Authority)
 
 #### 1. Single Port Authority & Mode Awareness
 To prevent TCP port conflicts, `PoolWebServer` has exclusive ownership of Port 80. The server relies on a strict Mode-Aware architecture, checking `WiFi.getMode()` upon receiving a request:
@@ -78,6 +78,25 @@ While the Web Server utilizes Arduino `String` objects (inherent to the `WebServ
 
 #### 3. MQTT Quarantine & Initialization
 The `PubSubClient` (MQTT) is inherently unstable if instantiated without an active network socket. To prevent `LoadProhibited` null-pointer CPU crashes, the MQTT client and state-publishing functions are strictly quarantined and bypassed unless `WiFi.status() == WL_CONNECTED` returns true.
+
+#### 4. RESTful JSON Interface
+The web server acts as the primary gateway for both the internal WebUI and external Home Assistant commands. It utilizes `ArduinoJson` to parse incoming payloads and serialize system states. All POST actions (Mode, Override, Settings) return standard HTTP status codes (200 OK, 400 Bad Request) with descriptive JSON error messages for UI toast notifications.
+
+#### 5. Cross-Origin Resource Sharing (CORS)
+To allow for local development and integration with external dashboards, the server implements strict CORS preflight handling (`HTTP_OPTIONS`). Every API response includes `Access-Control-Allow-Origin: *` headers, ensuring the controller remains accessible to modern browser security standards.
+
+#### 6. Atomicity & Safety Interlocks
+The Web Server does not directly manipulate hardware. It passes requests to the `PoolLogic` authority. If a web request violates a safety rule (e.g., "Turn on Heater while Pump is OFF"), the Web Server catches the `std::string` error returned by the logic layer and relays it back to the user, ensuring the API cannot be used to bypass physical safety constraints.
+
+---
+
+### `WebUI.h` (User Interface)
+
+#### 1. Zero-RAM Footprint (`PROGMEM`)
+The entire Web Admin dashboard (HTML/CSS/JS) is stored as a raw string literal in the ESP32's **Flash memory** using the `PROGMEM` macro. This ensures that the 20KB+ of UI code does not occupy any space in the precious SRAM (Heap), preventing crashes during high-concurrency network events.
+
+#### 2. Single Page Application (SPA)
+To provide a fluid, app-like experience, the UI is built as a SPA. Tab switching, settings saves, and manual relay toggles are handled via asynchronous `fetch()` calls to the REST API. This eliminates page reloads and allows the background JavaScript to maintain a 2-second "heartbeat" with the controller for real-time sensor updates.
 
 ---
 

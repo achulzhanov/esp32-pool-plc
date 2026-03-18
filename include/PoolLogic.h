@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <Preferences.h>
+#include <string>
 #include "KinConyPLC.h"
 #include "PoolNetworkManager.h"
 
@@ -37,15 +38,16 @@ public:
     // Service mode (Web admin)
     void setSystemMode(SystemMode mode);
     SystemMode getSystemMode() const;
-    void setServiceRelay(PoolRelay relay, bool state);
+    std::string setServiceRelay(PoolRelay relay, bool state);
+    bool getRelayState(PoolRelay relay) const;
 
     // User overrides
-    void overrideWaterMode(WaterMode mode, uint16_t timeoutMinutes);
-    void overrideFountain(bool state, uint16_t timeoutMinutes);
-    void overrideVacuum(bool state, uint16_t timeoutMinutes);
-    void overrideLights(bool state, uint16_t timeoutMinutes);
-    void overrideSpaBlower(bool state, uint16_t timeoutMinutes);
-    void overrideHeater(bool enable, uint16_t timeoutMinutes);
+    std::string overrideWaterMode(WaterMode mode, uint16_t timeoutMinutes);
+    std::string overrideFountain(bool state, uint16_t timeoutMinutes);
+    std::string overrideVacuum(bool state, uint16_t timeoutMinutes);
+    std::string overrideLights(bool state, uint16_t timeoutMinutes);
+    std::string overrideSpaBlower(bool state, uint16_t timeoutMinutes);
+    std::string overrideHeater(bool enable, uint16_t timeoutMinutes);
 
     void cancelAllOverrides();
 
@@ -53,9 +55,13 @@ public:
     void setTargetTempPool(float temp);
     void setTargetTempSpa(float temp);
     void setFreezeProtectTemp(float temp);
+    void setWaterTempOffset(float offset);
     float getTargetTempPool() const;
     float getTargetTempSpa() const;
+    float getAirTemp() const;
+    float getWaterTemp() const;
     float getFreezeProtectTemp() const;
+    float getWaterTempOffset() const;
     void setScheduleFilter(const Schedule& sched);
     void setScheduleVacuum(const Schedule& sched);
     void setScheduleLights(const Schedule& sched);
@@ -69,8 +75,10 @@ public:
     bool isVacuumOn() const;
     bool isLightsOn() const;
     bool isSpaBlowerOn() const;
+    bool isHeaterEnabled() const;
     bool isHeaterActive() const;
     bool isFreezeProtectionActive() const;
+    std::string getCurrentTimeString() const;
 
 private:
     KinConyPLC& _plc;
@@ -91,6 +99,7 @@ private:
     bool _heaterEnabled;
     bool _freezeModeActive;
     bool _callForHeat;
+    bool _lastCallForHeat;
 
     Schedule _schedFilter;
     Schedule _schedVacuum;
@@ -101,6 +110,7 @@ private:
     unsigned long _overrideSpaBlowerEnd;
     unsigned long _overrideLightsEnd;
     unsigned long _overrideHeaterEnd;
+    unsigned long _heaterCooldownEnd;
 
     unsigned long _lastTimeSync = 0;
     void syncTime();

@@ -1,4 +1,5 @@
 #include <time.h>
+#include <string>
 #include "PoolLogic.h"
 
 PoolLogic::PoolLogic(KinConyPLC& plc, PoolNetworkManager& netMgr)
@@ -6,7 +7,7 @@ PoolLogic::PoolLogic(KinConyPLC& plc, PoolNetworkManager& netMgr)
       _currentWaterMode(WaterMode::POOL), _targetTempPool(80.0), _targetTempSpa(100.00),
       _freezeProtectTemp(35.0), _fountainState(false), _vacuumState(false),
       _lightsState(false), _spaBlowerState(false), _heaterEnabled(false),
-      _freezeModeActive(false), _callForHeat(false) {}
+      _freezeModeActive(false), _callForHeat(false), _lastCallForHeat(false), _heaterCooldownEnd(0) {}
 
 void PoolLogic::begin() {
     // Set up the background NTP client for Central Time (US)
@@ -56,6 +57,11 @@ void PoolLogic::evaluateSafetyInterlocks() {
 void PoolLogic::evaluateOverrideTimeouts() {
     unsigned long currentMillis = millis();
     bool anyOverrideActive = false;
+    // Check heater cooldown timeout
+    if (_heaterCooldownEnd > 0 && (currentMillis >= _heaterCooldownEnd)) {
+        Serial.println("Heater cooldown period finished. Pump may now turn off.");
+        _heaterCooldownEnd = 0;
+    }
     // Check Water Mode timeout
     if (_currentWaterMode != WaterMode::POOL && (currentMillis >= _overrideWaterModeEnd)) {
         Serial.println("Water Mode override expired. Reverting to POOL.");
@@ -126,6 +132,14 @@ void PoolLogic::cancelAllOverrides() {
 }
 
 void PoolLogic::setSystemMode(SystemMode mode) {
+    if (_currentMode == SystemMode::SERVICE && mode != SystemMode::SERVICE) {
+        // If the physical heater relay is currently ON when we exit manual control
+        if (_plc.getRelayState(PoolRelay::HeaterIgniter)) {
+            Serial.println("Exiting Service Mode with heater ON. Forcing 5-min pump cooldown.");
+            _heaterCooldownEnd = millis() + (5 * 60000UL);
+            _lastCallForHeat = false; // Reset to prevent double-triggering in loop
+        }
+    }
     _currentMode = mode;
     if (mode == SystemMode::AUTO) {
         cancelAllOverrides();
@@ -137,26 +151,55 @@ SystemMode PoolLogic::getSystemMode() const {
 }
 
 // Service mode only
-void PoolLogic::setServiceRelay(PoolRelay relay, bool state) {
+std::string PoolLogic::setServiceRelay(PoolRelay relay, bool state) {
     if (_currentMode != SystemMode::SERVICE) {
-        return;
+        return "System must be in SERVICE mode to manually toggle relays.";
     }
-    // Service mode safety: do not allow heater enable or vacuum booster pump to run without filter pump running
+    // Safety 1: Cannot turn heater or vacuum ON without filter pump
     if ((relay == PoolRelay::HeaterIgniter || relay == PoolRelay::VacuumPump) && state == true) {
         if (!_plc.getRelayState(PoolRelay::FilterPump)) {
-            Serial.println("Access denied: Cannot fire heater or enable vacuum without filter pump running.");
-            return;
+            return "Safety Interlock: Filter pump must be ON to enable heater or vacuum.";
         }
     }
+    // Safety 2: Track Heater turning OFF manually to start the cooldown timer
+    if (relay == PoolRelay::HeaterIgniter && state == false) {
+        if (_plc.getRelayState(PoolRelay::HeaterIgniter) == true) {
+            // It was physically ON, start the 5-minute timer
+            _heaterCooldownEnd = millis() + (5 * 60000UL); 
+        }
+    }
+    // Safety 3: Trying to turn OFF the filter pump
+    if (relay == PoolRelay::FilterPump && state == false) {
+        // Case A: Heater is currently ON
+        if (_plc.getRelayState(PoolRelay::HeaterIgniter) == true) {
+            _plc.setRelay(PoolRelay::HeaterIgniter, false);
+            _plc.setRelay(PoolRelay::VacuumPump, false);
+            _heaterCooldownEnd = millis() + (5 * 60000UL);
+            return "Safety Interlock: Heater was running. Heater disabled, but pump locked ON for 5 min cooldown.";
+        }
+        // Case B: Heater is OFF, but cooldown timer is still actively ticking
+        if (_heaterCooldownEnd > 0 && millis() < _heaterCooldownEnd) {
+            unsigned long remainingSeconds = (_heaterCooldownEnd - millis()) / 1000;
+            return "Safety Interlock: Cooldown active. Pump locked ON for " + std::to_string(remainingSeconds) + " more seconds.";
+        }
+        // Case C: Cooldown is finished (or was never active). Safe to turn off pump.
+        _plc.setRelay(PoolRelay::VacuumPump, false);
+        _heaterCooldownEnd = 0;
+    }
     _plc.setRelay(relay, state);
+    return "success";
+}
+
+bool PoolLogic::getRelayState(PoolRelay relay) const {
+    return _plc.getRelayState(relay);
 }
 
 // User overrides
-void PoolLogic::overrideWaterMode(WaterMode mode, uint16_t timeoutMinutes) {
+std::string PoolLogic::overrideWaterMode(WaterMode mode, uint16_t timeoutMinutes) {
     // HA cannot turn the pool off
     if (mode == WaterMode::OFF) {
         Serial.println("Access denied: OFF is only available in SERVICE mode.");
-        return;
+        return "Access denied: OFF is only available in SERVICE mode.";
     }
     _currentWaterMode = mode;
     if (mode == WaterMode::SPA) {
@@ -180,9 +223,10 @@ void PoolLogic::overrideWaterMode(WaterMode mode, uint16_t timeoutMinutes) {
         _lightsState = false;
         _overrideLightsEnd = 0;
     }
+    return "success";
 }
 
-void PoolLogic::overrideFountain(bool state, uint16_t timeoutMinutes) {
+std::string PoolLogic::overrideFountain(bool state, uint16_t timeoutMinutes) {
     _fountainState = state;
     if (state) {
         _currentMode = SystemMode::USER_OVERRIDE;
@@ -191,9 +235,10 @@ void PoolLogic::overrideFountain(bool state, uint16_t timeoutMinutes) {
     else {
         _overrideFountainEnd = 0;
     }
+    return "success";
 }
 
-void PoolLogic::overrideVacuum(bool state, uint16_t timeoutMinutes) {
+std::string PoolLogic::overrideVacuum(bool state, uint16_t timeoutMinutes) {
     _vacuumState = state;
     if (state) {
         _currentMode = SystemMode::USER_OVERRIDE;
@@ -202,9 +247,10 @@ void PoolLogic::overrideVacuum(bool state, uint16_t timeoutMinutes) {
     else {
         _overrideVacuumEnd = 0;
     }
+    return "success";
 }
 
-void PoolLogic::overrideLights(bool state, uint16_t timeoutMinutes) {
+std::string PoolLogic::overrideLights(bool state, uint16_t timeoutMinutes) {
     _lightsState = state;
     if (state) {
         _currentMode = SystemMode::USER_OVERRIDE;
@@ -213,9 +259,10 @@ void PoolLogic::overrideLights(bool state, uint16_t timeoutMinutes) {
     else {
         _overrideLightsEnd = 0;
     }
+    return "success";
 }
 
-void PoolLogic::overrideSpaBlower(bool state, uint16_t timeoutMinutes) {
+std::string PoolLogic::overrideSpaBlower(bool state, uint16_t timeoutMinutes) {
     _spaBlowerState = state;
     if (state) {
         _currentMode = SystemMode::USER_OVERRIDE;
@@ -224,11 +271,12 @@ void PoolLogic::overrideSpaBlower(bool state, uint16_t timeoutMinutes) {
     else {
         _overrideSpaBlowerEnd = 0;
     }
+    return "success";
 }
 
-void PoolLogic::overrideHeater(bool enable, uint16_t timeoutMinutes) {
+std::string PoolLogic::overrideHeater(bool enable, uint16_t timeoutMinutes) {
     if (_currentWaterMode == WaterMode::SPA) {
-        return;
+        return "Heater is automatically controlled by Spa Mode.";
     }
     _heaterEnabled = enable;
     if (enable) {
@@ -238,6 +286,7 @@ void PoolLogic::overrideHeater(bool enable, uint16_t timeoutMinutes) {
     else {
         _overrideHeaterEnd = 0;
     }
+    return "success";
 }
 
 // Schedules, thermostats, execution
@@ -262,7 +311,8 @@ void PoolLogic::syncTime() {
             // Burn it into the KinCony's DS3231 chip
             _plc.setTime(ntpTime);
             _lastTimeSync = currentMillis;
-            Serial.print("RTC successfully synced with NTP.");
+            Serial.print("RTC successfully synced with NTP. Current time is: ");
+            Serial.println(getCurrentTimeString().c_str());
         }
     }
 }
@@ -299,6 +349,10 @@ void PoolLogic::evaluateThermostat() {
     // Target water temp dependent on intake actuator position
     float targetTemp = (_currentWaterMode == WaterMode::SPA) ? _targetTempSpa : _targetTempPool;
     bool heatingAllowed = (_currentWaterMode == WaterMode::SPA) || _heaterEnabled;
+    // Sensor failsafe
+    if (currentTemp < 32.0 || currentTemp > 110.0) {
+        heatingAllowed = false;
+    }
     // Hysteresis
     if (heatingAllowed && currentTemp < (targetTemp - 1.0)) {
         _callForHeat = true;
@@ -315,6 +369,13 @@ void PoolLogic::evaluateThermostat() {
     if (!pumpWillRun) {
         _callForHeat = false;
     }
+    // If the heater was ON last loop, but is OFF this loop, start the timer
+    if (_lastCallForHeat == true && _callForHeat == false) {
+        Serial.println("Heater turned off. Initiating 5-minute pump cooldown.");
+        _heaterCooldownEnd = millis() + (5 * 60000UL); // 5 minutes
+    }
+    // Save the current state for the next loop to compare against
+    _lastCallForHeat = _callForHeat;
 }
 
 void PoolLogic::executeHardwareStates() {
@@ -325,7 +386,9 @@ void PoolLogic::executeHardwareStates() {
     // Filter pump
     DateTime now = _plc.getCurrentTime();
     bool isFilterScheduled = isTimeInSchedule(now, _schedFilter);
-    bool pumpON = _freezeModeActive || isSpa || _vacuumState || (_currentWaterMode == WaterMode::POOL && isFilterScheduled);
+    bool isCooldownActive = (_heaterCooldownEnd > 0);
+    bool pumpON = _freezeModeActive || isSpa || _vacuumState ||
+                  (_currentWaterMode == WaterMode::POOL && isFilterScheduled) || isCooldownActive;
     _plc.setRelay(PoolRelay::FilterPump, pumpON);
     // Independent accessories
     _plc.setRelay(PoolRelay::VacuumPump, _freezeModeActive || _vacuumState);
@@ -334,6 +397,15 @@ void PoolLogic::executeHardwareStates() {
     _plc.setRelay(PoolRelay::AuxPump, _freezeModeActive || _fountainState);
     // Heater
     _plc.setRelay(PoolRelay::HeaterIgniter, _callForHeat);
+}
+
+std::string PoolLogic::getCurrentTimeString() const {
+    DateTime now = _plc.getCurrentTime();
+    char timeBuffer[] = "YYYY-MM-DD hh:mm:ss";
+    // RTClib mutates the array in place
+    now.toString(timeBuffer);
+    // Return a standard C++ string
+    return std::string(timeBuffer);
 }
 
 void PoolLogic::setTargetTempPool(float temp) {
@@ -348,6 +420,11 @@ void PoolLogic::setTargetTempSpa(float temp) {
 
 void PoolLogic::setFreezeProtectTemp(float temp) {
     _freezeProtectTemp = temp;
+    saveSettings();
+}
+
+void PoolLogic::setWaterTempOffset(float offset) {
+    _plc.setWaterTempOffset(offset);
     saveSettings();
 }
 
@@ -374,8 +451,20 @@ float PoolLogic::getTargetTempSpa() const {
     return _targetTempSpa;
 }
 
+float PoolLogic::getAirTemp() const {
+    return _plc.getAirTemp();
+}
+
+float PoolLogic::getWaterTemp() const {
+    return _plc.getWaterTemp();
+}
+
 float PoolLogic::getFreezeProtectTemp() const {
     return _freezeProtectTemp;
+}
+
+float PoolLogic::getWaterTempOffset() const {
+    return _plc.getWaterTempOffset();
 }
 
 Schedule PoolLogic::getScheduleFilter() const {
@@ -412,6 +501,10 @@ bool PoolLogic::isSpaBlowerOn() const {
 
 bool PoolLogic::isFreezeProtectionActive() const {
     return _freezeModeActive;
+}
+
+bool PoolLogic::isHeaterEnabled() const {
+    return _heaterEnabled;
 }
 
 bool PoolLogic::isHeaterActive() const { 

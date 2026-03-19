@@ -79,6 +79,11 @@ public:
     bool isHeaterActive() const;
     bool isFreezeProtectionActive() const;
     std::string getCurrentTimeString() const;
+    int getSpaTimeRemaining() const;
+    int getHeaterTimeRemaining() const;
+    int getLightsTimeRemaining() const;
+    int getVacuumTimeRemaining() const;
+    int getFountainTimeRemaining() const;
 
 private:
     KinConyPLC& _plc;
@@ -113,6 +118,7 @@ private:
     unsigned long _heaterCooldownEnd;
 
     unsigned long _lastTimeSync = 0;
+    unsigned long _lastFailsafePrint = 0;
     void syncTime();
 
     bool isTimeInSchedule(const DateTime& now, const Schedule& sched) const;

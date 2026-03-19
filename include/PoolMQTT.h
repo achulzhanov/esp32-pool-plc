@@ -23,7 +23,7 @@ private:
     void sendDiscoverySwitch(const char* name, const char* id, const char* state_topic, const char* cmd_topic, const char* deviceJson);
     void sendDiscoveryNumber(const char* name, const char* id, const char* state_topic, const char* cmd_topic, int min_val, int max_val, const char* deviceJson);
     void sendDiscoverySensor(const char* name, const char* id, const char* state_topic, const char* unit, const char* device_class, const char* deviceJson);
-    void sendDiscoveryClimate(const char* deviceJson);
+    void sendDiscoveryClimate(const char* name, const char* id, int min_temp, int max_temp, const char* deviceJson, const char* avty_topic);
 
     WiFiClient _wifiClient;
     PubSubClient _mqtt;
@@ -37,6 +37,7 @@ private:
     int _timeoutHeater = 120;
     int _timeoutLights = 120;
     int _timeoutVacuum = 120;
+    int _timeoutFountain = 120;
 };
 
 #endif

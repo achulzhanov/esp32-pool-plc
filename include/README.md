@@ -1,104 +1,90 @@
-# Header & Hardware Architecture (`include/`)
+# Header & Software Architecture (`include/`)
 
-This directory contains the C++ header files for the ESP32-S3 Smart Pool Controller. The project uses OOP to separate concerns into dedicated classes that abstract the hardware layer, network stack, and control logic.
+This directory contains the C++ header files for the ESP32-S3 Smart Pool Controller. The project uses strict Object-Oriented Programming (OOP) to separate concerns into dedicated classes. This isolates the hardware layer from the network stack, the central control logic from the transport protocols, and ensures predictable, crash-free performance over long uptimes.
 
-## Architectural Decisions
+## Dependency Injection Chain (Initialization Order)
+
+Because this firmware does not use a master configuration header, the order of instantiation in `main.cpp` is critical. Classes must be initialized and passed by reference in a specific order to satisfy their dependencies:
+
+1. **`KinConyPLC` (Hardware):** Initialized first. It claims the I2C/SPI buses and sets the hardware pins to safe default states (OFF) before any logic can execute.
+2. **`PoolNetworkManager` (Connectivity):** Initialized second. It mounts the NVS flash memory to retrieve saved credentials and spins up the Ethernet/Wi-Fi stack.
+3. **`PoolLogic` (Scheduling, Overrides, Safeties):** Initialized third, requiring references to `KinConyPLC` and `PoolNetworkManager`. It reads the physical sensors, pulls the saved user settings from flash, and takes immediate control of the hardware state machine.
+4. **`PoolWebServer` & `PoolMQTT` (The Transports):** Initialized last, requiring references to `PoolNetworkManager` and `PoolLogic`. They act purely as communication interfaces (REST and MQTT) to translate external commands into `PoolLogic` functions.
+
+---
+
+## Architectural Decisions & Class Scopes
 
 If you are modifying this code to fit your specific pool setup, please note the following design constraints driven by the KinCony KC868-A8v3 hardware and the ESP32-S3 RTOS environment:
 
-### `KinConyPLC.h` (Hardware Class)
+### `KinConyPLC.h` (Hardware Abstraction)
 
 #### 1. 16-Bit Relay State (`uint16_t _currentRelayState`)
-While this board only has 8 physical relays, the variable tracking their state is explicitly defined as a 16-bit integer (`uint16_t`). 
-The relays are driven by a **PCF8575 I2C I/O Expander**. This specific microchip is a 16-bit device. Pins `P0-P7` drive the relays, while pins `P8-P15` are wired to the digital inputs. 
-To prevent accidentally overwriting or disabling the digital inputs when toggling a relay, the software must read, mask, and transmit a full 16-bit payload during every I2C transaction. Do not reduce this variable to an 8-bit integer.
+While this board only has 8 physical relays, the variable tracking their state is explicitly defined as a 16-bit integer. The relays are driven by a **PCF8575 I2C I/O Expander**, which is a 16-bit device. Pins `P0-P7` drive the relays, while pins `P8-P15` are wired to the digital inputs. To prevent accidentally overwriting the digital inputs when toggling a relay, the software must read, mask, and transmit a full 16-bit payload during every I2C transaction. 
 
-#### 2. Active-Low Hardware Bonudary
-The relays on the KinCony board driven by the PCF8575 I2C Expander are active-low logic (a `LOW` signal energizes the coil). To keep the high-level `PoolLogic` intuitive, the bitwise NOT operator (`~`) is applied exclusively inside the hardware boundary (`writeI2C`) at the exact moment of transmission. This ensures default initializations (e.g., `0x0000`) safely translate to all pins being driven `HIGH` (off) at boot.
+#### 2. Active-Low Hardware Boundary
+The relays driven by the PCF8575 are active-low logic (a `LOW` signal energizes the coil). To keep the high-level logic intuitive (where `true` means ON), the bitwise NOT operator (`~`) is applied exclusively inside the hardware boundary (`writeI2C`) at the exact moment of transmission. This ensures default initializations (e.g., `0x0000`) safely translate to all pins being driven `HIGH` (off) at boot.
 
 #### 3. Strict Type Safety (`enum class PoolRelay : uint8_t`)
-To prevent magic numbers and out-of-bounds relay calls, the relays are strictly mapped using an `enum class`.
-If you change the physical wiring of your high-voltage contactors or 24VAC actuators, you **must** update the names in the `PoolRelay` enum to match your new layout. 
-The enum is explicitly packed into a `uint8_t` (1 byte) to conserve RAM, as we only need to map indexes 0 through 7.
+To prevent magic numbers and out-of-bounds relay calls, the relays are strictly mapped using an `enum class`. The enum is explicitly packed into a `uint8_t` (1 byte) to conserve RAM.
 
----
+### `PoolLogic.h` (Equipment Control & Safety)
 
-### `PoolLogic.h` (Equipment Control Logic & Scheduling)
-
-#### 1. The 3-Tier Authority Model (`SystemMode`)
+#### 1. 3-Tier Authority Model (`SystemMode`)
 To ensure the system is physically safe to maintain while allowing for home automation flexibility, control authority is strictly tiered:
-* **Tier 1: Service Mode (`SERVICE`)** - Reserved for the Web Admin. This mode completely halts the `loop()` state machine. Schedules, timeouts, and thermostats are ignored. Hardware is directly manipulated via `setServiceRelay()` to safely isolate equipment for maintenance, while maintaining critical safety interlocks.
-* **Tier 2: User Overrides (`USER_OVERRIDE`)** - Reserved for day-to-day user commands (e.g., via Home Assistant). These commands are strictly bound by timeouts (e.g., "Turn on Spa for 120 minutes"). Users cannot command the pool to turn `OFF`, ensuring the baseline filtration schedule is protected from errant MQTT payloads.
-* **Tier 3: Automation (`AUTO`)** - The baseline state. Evaluates the RTC clock against user-defined schedules and temperature hysteresis.
+* **Tier 1: Service Mode (`SERVICE`)** - Reserved for the Web Admin. This mode completely halts the `loop()` state machine. Schedules, timeouts, and thermostats are ignored. Hardware is directly manipulated to safely isolate equipment for maintenance.
+* **Tier 2: User Overrides (`USER_OVERRIDE`)** - Reserved for day-to-day user commands via MQTT/Web. These commands are strictly bound by timeouts (e.g., "Turn on Spa for 120 minutes").
+* **Tier 3: Automation (`AUTO`)** - The baseline state. Evaluates the RTC clock against user-defined schedules.
 
-#### 2. Calculated Dependencies vs. Independent Accessories
-Not all relays are treated equally in the logic funnel:
-* **Independent Accessories:** The Pool Lights, Spa Blower, and Fountain can be toggled blindly without affecting the rest of the pool plumbing.
-* **Calculated Dependencies:** The **Filter Pump** is the engine of the entire system. It does not have a simple ON/OFF variable. Instead, its state is dynamically calculated at the very end of the logic loop (`pumpON = _freezeModeActive || isSpa || _vacuumState || isFilterScheduled`). This guarantees the pump provides water flow whenever a dependent accessory demands it, preventing hardware damage.
+#### 2. "Smart Cancel" Override Logic
+To prevent manual overrides from fighting with active schedules, `PoolLogic` uses a Smart Cancel system:
+* If a user turns an accessory OFF while its schedule is active, the logic creates an explicit "OFF Override" timer to actively suppress the schedule.
+* If a user turns an accessory OFF outside of its schedule, the logic instantly zeroes the timer and releases the system back to `AUTO` mode.
 
-#### 3. Parallel Execution ("Masking" Technique)
-To allow a user to turn on the pool lights at 6:00 PM without accidentally pausing the filter pump's 8:00 AM to 8:00 PM schedule, schedules and user overrides execute in parallel. 
-When a user overrides an accessory, an expiration timer (`_overrideEnd > 0`) acts as a "mask." The schedule evaluator sees this mask and temporarily ignores that specific accessory, while continuing to evaluate the schedules for the rest of the system. Once the override expires, the mask is zeroed out, and the schedule seamlessly resumes control.
-
-#### 4. Failsafes & Safety Interlocks
-* **Heater & Vacuum Interlocks:** The logic actively predicts water flow. The gas heater and the pressure-side vacuum booster pump are mathematically forbidden from turning ON unless the main Filter Pump is also commanded ON, preventing dry-firing and melted shaft seals.
-* **Freeze Protection:** If the air temperature drops below the setpoint, the logic bypasses all schedules to force the Filter, Vacuum, and Aux pumps ON to continuously circulate water through the exposed equipment pad. Firing the heater is explicitly avoided during freeze protection to prevent acidic condensation and heat exchanger damage from near-freezing water.
-* **Network Fallback:** If the system is currently executing a User Override (e.g., Spa Mode) and the network connection drops, the controller instantly cancels the override and reverts to `AUTO` mode. This guarantees that an accessory won't get stuck running indefinitely if your network hardware crashes and you lose the ability to turn off equipment via Home Assistant.
-
----
+#### 3. Failsafes & Safety Interlocks
+* **Heater & Vacuum Interlocks:** The gas heater and vacuum booster pump are mathematically forbidden from turning ON unless the main Filter Pump is also commanded ON. 
+* **Sensor Failsafe:** If the DS18B20 temperature sensor is disconnected, it returns a massive negative value. The logic actively traps out-of-bounds readings (`< 32F` or `> 110F`) and hard-locks the heater from firing to prevent dry-firing or boiling the pipes.
+* **Heater Cooldown:** If the heater is turned off (via thermostat or user command), the logic forces the filter pump to remain ON for a strict 5-minute cooldown period to strip residual heat from the heat exchanger.
 
 ### `PoolNetworkManager.h` (Network Stack)
 
 #### 1. Standard C++ Memory Safety (`std::string`)
-To prevent the heap fragmentation caused by the default Arduino `String` class over long uptimes, this class utilizes the C++ STL (`#include <string>`). Conversion to Arduino `String` or C-strings (`.c_str()`) is strictly quarantined to the immediate point of hardware or Preferences API execution, allowing the variables to immediately go out of scope and free the heap.
+To prevent the heap fragmentation caused by the default Arduino `String` class over long uptimes, this class utilizes the C++ STL (`#include <string>`). Conversion to Arduino `String` or C-strings (`.c_str()`) is strictly quarantined to the immediate point of API execution, allowing variables to quickly go out of scope and free the heap.
 
-#### 2. Non-Blocking Event Handlers (FreeRTOS Safety)
-The `networkEventCallback` function is triggered by the ESP32's underlying FreeRTOS Wi-Fi thread. To prevent watchdog timer crashes, this static callback **never** attempts to reconnect or read from flash memory directly. It strictly acts as an interrupt, flipping the `_currentState` flag in roughly one microsecond and yielding control. The actual reconnection logic is safely handled by the `loop()` function running on the main program thread.
+#### 2. Self-Healing Connection & Captive Portal
+* **Grace Period:** At boot, if the controller cannot find the router, it enters a 5-minute retry window to account for home routers booting up slowly after power outages.
+* **Captive Portal:** If the 5-minute boot grace period expires without a connection, the controller assumes credentials have changed and spins up an Access Point (`192.168.4.1`) to serve a Wi-Fi setup page.
+* **Background Auto-Recovery:** If the network drops *after* a successful boot, the controller silently drops to the `DISCONNECTED` state and attempts a non-blocking reconnection cycle every 20 seconds.
 
-#### 3. Self-Healing Network Connection & Boot Grace Period
-The network logic is designed to survive unstable grids and power flickers without stranding the pool controller offline:
-* **Grace Period:** At boot, if the controller cannot find the router, it will enter a 5-minute retry window. This accounts for scenarios where the ESP32 boots in 2 seconds, but a standard home router takes several minutes to establish a Wi-Fi network after a power outage.
-* **Captive Portal:** If (and only if) the 5-minute boot grace period expires without a connection, the controller assumes the network credentials have changed or the network is otherwise unavailable and spins up the SoftAP Captive Portal.
-* **Background Auto-Recovery:** If the network drops *after* a successful boot, the controller does not enter AP Mode. It silently drops to the `DISCONNECTED` state and attempts a non-blocking reconnection cycle every 20 seconds until the router returns, ensuring the physical pool logic is never interrupted.
+#### 3. W5500 SPI Ethernet (Core 3.x)
+The KinCony board utilizes a W5500 hardware Ethernet chip. To maintain compatibility with Arduino ESP32 Core 3.x, the SPI bus is initialized globally with custom pins before being passed into the native `<ETH.h>` library. 
 
-#### 4. W5500 SPI Ethernet (Core 3.x)
-The KinCony board utilizes a W5500 hardware Ethernet chip. To maintain compatibility with Arduino ESP32 Core 3.x, the SPI bus is initialized globally with custom pins (`SPI.begin()`) before being passed into the native `ETH.begin()` function. Do not attempt to use the legacy `arduino-libraries/Ethernet` package, as the native `<ETH.h>` library provides vastly superior RTOS integration.
+### `PoolMQTT.h` (Home Assistant Integration)
 
----
+#### 1. Separation of Concerns
+This class is exclusively responsible for translating `PoolLogic` state into Home Assistant entities. It does not handle device configuration (which is reserved for `PoolWebServer`). 
 
-### `PoolWebServer.h` (REST API & Authority)
+#### 2. Auto-Discovery & Dynamic Availability
+The class utilizes Home Assistant's MQTT Auto-Discovery protocol. At boot, it publishes expansive JSON payloads to the `homeassistant/` root topic to automatically build the dashboard UI. It actively leverages MQTT availability topics (`online`/`offline`) to dynamically gray out the Pool Thermostat when Spa Mode is active, and vice versa.
 
-#### 1. Single Port Authority & Mode Awareness
-To prevent TCP port conflicts, `PoolWebServer` has exclusive ownership of Port 80. The server relies on a strict Mode-Aware architecture, checking `WiFi.getMode()` upon receiving a request:
-* **AP Mode (Captive Portal):** If the ESP32 is broadcasting its own network, the server traps all incoming mobile requests (e.g., `/generate_204`, `/ncsi.txt`) via an `onNotFound` handler and issues a 302 Redirect to the `/wifi-setup` configuration page.
-* **STA Mode (REST API & UI):** Once connected to a router, the setup form is hidden, and the server transitions to serving the Web Admin UI and handling JSON API payloads.
+#### 3. Buffer Expansion
+Because the HA Auto-Discovery JSON payloads (especially for Climate entities) exceed the default limits of the `PubSubClient` library, the buffer is explicitly expanded to `1024` bytes at runtime during `begin()`.
 
-#### 2. Network Boundary Handoff
-While the Web Server utilizes Arduino `String` objects (inherent to the `WebServer` library) to parse HTTP bodies and form arguments, these objects are instantly converted to `std::string` at the boundary before being passed to the `PoolNetworkManager` to prevent heap fragmentation.
+### `PoolWebServer.h` (REST API & Configuration)
 
-#### 3. MQTT Quarantine & Initialization
-The `PubSubClient` (MQTT) is inherently unstable if instantiated without an active network socket. To prevent `LoadProhibited` null-pointer CPU crashes, the MQTT client and state-publishing functions are strictly quarantined and bypassed unless `WiFi.status() == WL_CONNECTED` returns true.
+#### 1. Port Authority & Boundary Handoff
+`PoolWebServer` owns Port 80. While the `WebServer` library forces the use of Arduino `String` objects to parse HTTP bodies, these objects are instantly converted to `std::string` at the boundary before being passed to `PoolLogic` or `PoolNetworkManager`.
 
-#### 4. RESTful JSON Interface
-The web server acts as the primary gateway for both the internal WebUI and external Home Assistant commands. It utilizes `ArduinoJson` to parse incoming payloads and serialize system states. All POST actions (Mode, Override, Settings) return standard HTTP status codes (200 OK, 400 Bad Request) with descriptive JSON error messages for UI toast notifications.
-
-#### 5. Cross-Origin Resource Sharing (CORS)
-To allow for local development and integration with external dashboards, the server implements strict CORS preflight handling (`HTTP_OPTIONS`). Every API response includes `Access-Control-Allow-Origin: *` headers, ensuring the controller remains accessible to modern browser security standards.
-
-#### 6. Atomicity & Safety Interlocks
-The Web Server does not directly manipulate hardware. It passes requests to the `PoolLogic` authority. If a web request violates a safety rule (e.g., "Turn on Heater while Pump is OFF"), the Web Server catches the `std::string` error returned by the logic layer and relays it back to the user, ensuring the API cannot be used to bypass physical safety constraints.
-
----
+#### 2. Atomicity & Safety Interlocks
+The Web Server does not manipulate hardware. It passes requests to the `PoolLogic` authority. If a web request violates a safety rule, the Web Server catches the error returned by the logic layer and relays it back to the client as a `400 Bad Request` with a descriptive JSON payload for toast notifications.
 
 ### `WebUI.h` (User Interface)
 
 #### 1. Zero-RAM Footprint (`PROGMEM`)
-The entire Web Admin dashboard (HTML/CSS/JS) is stored as a raw string literal in the ESP32's **Flash memory** using the `PROGMEM` macro. This ensures that the 20KB+ of UI code does not occupy any space in the precious SRAM (Heap), preventing crashes during high-concurrency network events.
+The entire Web Admin dashboard (HTML/CSS/JS) is stored as a raw string literal in the ESP32's **Flash memory** using the `PROGMEM` macro. This ensures that the 20KB+ UI does not occupy any space in the SRAM (Heap).
 
 #### 2. Single Page Application (SPA)
-To provide a fluid, app-like experience, the UI is built as a SPA. Tab switching, settings saves, and manual relay toggles are handled via asynchronous `fetch()` calls to the REST API. This eliminates page reloads and allows the background JavaScript to maintain a 2-second "heartbeat" with the controller for real-time sensor updates.
-
----
+The UI is built as a SPA. Tab switching and API calls are handled via asynchronous `fetch()`, allowing the background JavaScript to maintain a 2-second polling "heartbeat" with the controller for real-time sensor updates without page reloads.
 
 ## KinCony KC868-A8v3 Pin Reference Map
 

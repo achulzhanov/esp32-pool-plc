@@ -57,59 +57,33 @@ void PoolLogic::evaluateSafetyInterlocks() {
 void PoolLogic::evaluateOverrideTimeouts() {
     unsigned long currentMillis = millis();
     bool anyOverrideActive = false;
-    // Check heater cooldown timeout
     if (_heaterCooldownEnd > 0 && (currentMillis >= _heaterCooldownEnd)) {
         Serial.println("Heater cooldown period finished. Pump may now turn off.");
         _heaterCooldownEnd = 0;
     }
-    // Check Water Mode timeout
-    if (_currentWaterMode != WaterMode::POOL && (currentMillis >= _overrideWaterModeEnd)) {
-        Serial.println("Water Mode override expired. Reverting to POOL.");
-        _currentWaterMode = WaterMode::POOL;
-        _overrideWaterModeEnd = 0;
-        _spaBlowerState = false;
-        _overrideSpaBlowerEnd = 0;
-        _heaterEnabled = false;
-        _overrideHeaterEnd = 0;
-    }
-    else if (_overrideWaterModeEnd > 0) {
-        anyOverrideActive = true;
-    }
-    // Check independent accessory timeouts
-    if (_overrideFountainEnd > 0 && (currentMillis >= _overrideFountainEnd)) {
-        _fountainState = false; _overrideFountainEnd = 0;
-    }
-    else if (_overrideFountainEnd > 0) {
-        anyOverrideActive = true;
-    }
-    if (_overrideLightsEnd > 0 && (currentMillis >= _overrideLightsEnd)) {
-        _lightsState = false; _overrideLightsEnd = 0;
-    }
-    else if (_overrideLightsEnd > 0) {
-        anyOverrideActive = true;
-    }
-    if (_overrideVacuumEnd > 0 && (currentMillis >= _overrideVacuumEnd)) {
-        _vacuumState = false; _overrideVacuumEnd = 0;
-    }
-    else if (_overrideVacuumEnd > 0) {
-        anyOverrideActive = true;
-    }
-    if (_overrideSpaBlowerEnd > 0 && (currentMillis >= _overrideSpaBlowerEnd)) {
+    // We only reset the target state to false when the actual timeout timer expires.
+    if (_overrideWaterModeEnd > 0 && currentMillis >= _overrideWaterModeEnd) {
+        _currentWaterMode = WaterMode::POOL; _overrideWaterModeEnd = 0;
         _spaBlowerState = false; _overrideSpaBlowerEnd = 0;
-    }
-    else if (_overrideSpaBlowerEnd > 0) {
-        anyOverrideActive = true;
-    }
-    if (_overrideHeaterEnd > 0 && (currentMillis >= _overrideHeaterEnd)) {
-        Serial.println("Heater override expired. Disabling heater.");
-        _heaterEnabled = false;
-        _overrideHeaterEnd = 0;
-    }
-    else if (_overrideHeaterEnd > 0) {
-        anyOverrideActive = true;
-    }
+        _heaterEnabled = false; _overrideHeaterEnd = 0;
+        _lightsState = false; _overrideLightsEnd = 0;
+    } else if (_overrideWaterModeEnd > 0) anyOverrideActive = true;
+    if (_overrideFountainEnd > 0 && currentMillis >= _overrideFountainEnd) {
+        _fountainState = false; _overrideFountainEnd = 0;
+    } else if (_overrideFountainEnd > 0) anyOverrideActive = true;
+    if (_overrideLightsEnd > 0 && currentMillis >= _overrideLightsEnd) {
+        _overrideLightsEnd = 0; // evaluateSchedules() sets the correct state next loop
+    } else if (_overrideLightsEnd > 0) anyOverrideActive = true;
+    if (_overrideVacuumEnd > 0 && currentMillis >= _overrideVacuumEnd) {
+        _overrideVacuumEnd = 0; // evaluateSchedules() sets the correct state next loop
+    } else if (_overrideVacuumEnd > 0) anyOverrideActive = true;
+    if (_overrideSpaBlowerEnd > 0 && currentMillis >= _overrideSpaBlowerEnd) {
+        _spaBlowerState = false; _overrideSpaBlowerEnd = 0;
+    } else if (_overrideSpaBlowerEnd > 0) anyOverrideActive = true;
+    if (_overrideHeaterEnd > 0 && currentMillis >= _overrideHeaterEnd) {
+        _heaterEnabled = false; _overrideHeaterEnd = 0;
+    } else if (_overrideHeaterEnd > 0) anyOverrideActive = true;
     if (!anyOverrideActive && _currentMode == SystemMode::USER_OVERRIDE) {
-        Serial.println("All User Overrides expired. Returning to AUTO mode.");
         _currentMode = SystemMode::AUTO;
     }
 }
@@ -231,33 +205,67 @@ std::string PoolLogic::overrideFountain(bool state, uint16_t timeoutMinutes) {
     if (state) {
         _currentMode = SystemMode::USER_OVERRIDE;
         _overrideFountainEnd = millis() + (timeoutMinutes * 60000UL);
-    }
-    else {
-        _overrideFountainEnd = 0;
+        if (_overrideFountainEnd == 0) _overrideFountainEnd = 1;
+    } else {
+        _overrideFountainEnd = 0; // evaluateOverrideTimeouts() reverts to AUTO if nothing else is active
     }
     return "success";
 }
 
 std::string PoolLogic::overrideVacuum(bool state, uint16_t timeoutMinutes) {
-    _vacuumState = state;
+    DateTime now = _plc.getCurrentTime();
     if (state) {
-        _currentMode = SystemMode::USER_OVERRIDE;
-        _overrideVacuumEnd = millis() + (timeoutMinutes * 60000UL);
-    }
-    else {
-        _overrideVacuumEnd = 0;
+        if (isTimeInSchedule(now, _schedVacuum)) {
+            // Schedule already covers this. Clear any active suppression and return to AUTO.
+            _overrideVacuumEnd = 0;
+        } else {
+            // Outside schedule window: force ON with timeout.
+            _vacuumState = true;
+            _currentMode = SystemMode::USER_OVERRIDE;
+            _overrideVacuumEnd = millis() + (timeoutMinutes * 60000UL);
+            if (_overrideVacuumEnd == 0) _overrideVacuumEnd = 1;
+        }
+    } else {
+        _vacuumState = false;
+        if (_overrideVacuumEnd > 0) {
+            // Cancel an active force-ON override; return to schedule.
+            _overrideVacuumEnd = 0;
+        } else if (isTimeInSchedule(now, _schedVacuum)) {
+            // Schedule is running; suppress it for the timeout (e.g. morning swim).
+            _currentMode = SystemMode::USER_OVERRIDE;
+            _overrideVacuumEnd = millis() + (timeoutMinutes * 60000UL);
+            if (_overrideVacuumEnd == 0) _overrideVacuumEnd = 1;
+        }
+        // else: vacuum was already off outside schedule — no-op.
     }
     return "success";
 }
 
 std::string PoolLogic::overrideLights(bool state, uint16_t timeoutMinutes) {
-    _lightsState = state;
+    DateTime now = _plc.getCurrentTime();
     if (state) {
-        _currentMode = SystemMode::USER_OVERRIDE;
-        _overrideLightsEnd = millis() + (timeoutMinutes * 60000UL);
-    }
-    else {
-        _overrideLightsEnd = 0;
+        if (isTimeInSchedule(now, _schedLights)) {
+            // Schedule already covers this. Clear any active suppression and return to AUTO.
+            _overrideLightsEnd = 0;
+        } else {
+            // Outside schedule window: force ON with timeout.
+            _lightsState = true;
+            _currentMode = SystemMode::USER_OVERRIDE;
+            _overrideLightsEnd = millis() + (timeoutMinutes * 60000UL);
+            if (_overrideLightsEnd == 0) _overrideLightsEnd = 1;
+        }
+    } else {
+        _lightsState = false;
+        if (_overrideLightsEnd > 0) {
+            // Cancel an active force-ON override; return to schedule.
+            _overrideLightsEnd = 0;
+        } else if (isTimeInSchedule(now, _schedLights)) {
+            // Schedule is running; suppress it for the timeout.
+            _currentMode = SystemMode::USER_OVERRIDE;
+            _overrideLightsEnd = millis() + (timeoutMinutes * 60000UL);
+            if (_overrideLightsEnd == 0) _overrideLightsEnd = 1;
+        }
+        // else: lights were already off outside schedule — no-op.
     }
     return "success";
 }
@@ -267,23 +275,21 @@ std::string PoolLogic::overrideSpaBlower(bool state, uint16_t timeoutMinutes) {
     if (state) {
         _currentMode = SystemMode::USER_OVERRIDE;
         _overrideSpaBlowerEnd = millis() + (timeoutMinutes * 60000UL);
-    }
-    else {
+        if (_overrideSpaBlowerEnd == 0) _overrideSpaBlowerEnd = 1;
+    } else {
         _overrideSpaBlowerEnd = 0;
     }
     return "success";
 }
 
 std::string PoolLogic::overrideHeater(bool enable, uint16_t timeoutMinutes) {
-    if (_currentWaterMode == WaterMode::SPA) {
-        return "Heater is automatically controlled by Spa Mode.";
-    }
+    if (_currentWaterMode == WaterMode::SPA) return "Heater controlled by Spa Mode.";
     _heaterEnabled = enable;
     if (enable) {
         _currentMode = SystemMode::USER_OVERRIDE;
         _overrideHeaterEnd = millis() + (timeoutMinutes * 60000UL);
-    }
-    else {
+        if (_overrideHeaterEnd == 0) _overrideHeaterEnd = 1;
+    } else {
         _overrideHeaterEnd = 0;
     }
     return "success";
@@ -334,68 +340,58 @@ bool PoolLogic::isTimeInSchedule(const DateTime& now, const Schedule& sched) con
 
 void PoolLogic::evaluateSchedules() {
     DateTime now = _plc.getCurrentTime();
-    if (_overrideVacuumEnd == 0) {
-        _vacuumState = isTimeInSchedule(now, _schedVacuum);
-    }
-    if (_overrideLightsEnd == 0) {
-        _lightsState = isTimeInSchedule(now, _schedLights);
-    }
-    // Filter pump schedule evaluated in executeHardwareStates()
-    // because it is a master dependency
+    // Only apply schedule if the override timer is absolutely 0.
+    if (_overrideVacuumEnd == 0) _vacuumState = isTimeInSchedule(now, _schedVacuum);
+    if (_overrideLightsEnd == 0) _lightsState = isTimeInSchedule(now, _schedLights);
 }
 
 void PoolLogic::evaluateThermostat() {
     float currentTemp = _plc.getWaterTemp();
-    // Target water temp dependent on intake actuator position
     float targetTemp = (_currentWaterMode == WaterMode::SPA) ? _targetTempSpa : _targetTempPool;
     bool heatingAllowed = (_currentWaterMode == WaterMode::SPA) || _heaterEnabled;
-    // Sensor failsafe
+    // If sensor is unplugged, temp reads -127. Disable heater.
     if (currentTemp < 32.0 || currentTemp > 110.0) {
         heatingAllowed = false;
+        if (millis() - _lastFailsafePrint > 10000) {
+            Serial.println("SAFETY INTERLOCK: Water Temp is missing or out of bounds. Heater disabled.");
+            _lastFailsafePrint = millis();
+        }
     }
-    // Hysteresis
     if (heatingAllowed && currentTemp < (targetTemp - 1.0)) {
         _callForHeat = true;
-    }
-    else if (!heatingAllowed || currentTemp >= targetTemp) {
+    } else if (!heatingAllowed || currentTemp >= targetTemp) {
         _callForHeat = false;
     }
-    // Filter pump interlock
     DateTime now = _plc.getCurrentTime();
     bool isFilterScheduled = isTimeInSchedule(now, _schedFilter);
+    // Added _heaterEnabled so the logic knows the pump needs to run
     bool pumpWillRun = _freezeModeActive || _vacuumState ||
         (_currentWaterMode == WaterMode::SPA) ||
-        (_currentWaterMode == WaterMode::POOL && isFilterScheduled);
-    if (!pumpWillRun) {
-        _callForHeat = false;
-    }
-    // If the heater was ON last loop, but is OFF this loop, start the timer
+        (_currentWaterMode == WaterMode::POOL && isFilterScheduled) || _heaterEnabled; 
+    if (!pumpWillRun) _callForHeat = false;
     if (_lastCallForHeat == true && _callForHeat == false) {
         Serial.println("Heater turned off. Initiating 5-minute pump cooldown.");
-        _heaterCooldownEnd = millis() + (5 * 60000UL); // 5 minutes
+        _heaterCooldownEnd = millis() + (5 * 60000UL);
     }
-    // Save the current state for the next loop to compare against
     _lastCallForHeat = _callForHeat;
 }
 
 void PoolLogic::executeHardwareStates() {
-    // Actuators
     bool isSpa = (_currentWaterMode == WaterMode::SPA);
     _plc.setRelay(PoolRelay::IntakeActuator, isSpa);
     _plc.setRelay(PoolRelay::ReturnActuator, isSpa);
-    // Filter pump
     DateTime now = _plc.getCurrentTime();
     bool isFilterScheduled = isTimeInSchedule(now, _schedFilter);
     bool isCooldownActive = (_heaterCooldownEnd > 0);
+    // Filter pump master
     bool pumpON = _freezeModeActive || isSpa || _vacuumState ||
-                  (_currentWaterMode == WaterMode::POOL && isFilterScheduled) || isCooldownActive;
+                  (_currentWaterMode == WaterMode::POOL && isFilterScheduled) || 
+                  isCooldownActive || _heaterEnabled;              
     _plc.setRelay(PoolRelay::FilterPump, pumpON);
-    // Independent accessories
     _plc.setRelay(PoolRelay::VacuumPump, _freezeModeActive || _vacuumState);
-    _plc.setRelay(PoolRelay::PoolLights, _lightsState);
+    _plc.setRelay(PoolRelay::PoolLights, _lightsState || isSpa); // Spa Mode holds lights ON 
     _plc.setRelay(PoolRelay::SpaBlower, _spaBlowerState);
     _plc.setRelay(PoolRelay::AuxPump, _freezeModeActive || _fountainState);
-    // Heater
     _plc.setRelay(PoolRelay::HeaterIgniter, _callForHeat);
 }
 
@@ -509,6 +505,33 @@ bool PoolLogic::isHeaterEnabled() const {
 
 bool PoolLogic::isHeaterActive() const { 
     return _plc.getRelayState(PoolRelay::HeaterIgniter); 
+}
+
+int PoolLogic::getSpaTimeRemaining() const {
+    if (_overrideWaterModeEnd == 0 || _currentWaterMode != WaterMode::SPA) return 0;
+    unsigned long now = millis();
+    return (now >= _overrideWaterModeEnd) ? 0 : (_overrideWaterModeEnd - now) / 60000;
+}
+int PoolLogic::getHeaterTimeRemaining() const {
+    if (_overrideHeaterEnd == 0 || !_heaterEnabled) return 0;
+    unsigned long now = millis();
+    return (now >= _overrideHeaterEnd) ? 0 : (_overrideHeaterEnd - now) / 60000;
+}
+int PoolLogic::getLightsTimeRemaining() const {
+    if (_overrideLightsEnd == 0) return 0;
+    unsigned long now = millis();
+    return (now >= _overrideLightsEnd) ? 0 : (_overrideLightsEnd - now) / 60000;
+}
+int PoolLogic::getVacuumTimeRemaining() const {
+    if (_overrideVacuumEnd == 0) return 0;
+    unsigned long now = millis();
+    return (now >= _overrideVacuumEnd) ? 0 : (_overrideVacuumEnd - now) / 60000;
+}
+
+int PoolLogic::getFountainTimeRemaining() const {
+    if (_overrideFountainEnd == 0) return 0;
+    unsigned long now = millis();
+    return (now >= _overrideFountainEnd) ? 0 : (_overrideFountainEnd - now) / 60000;
 }
 
 void PoolLogic::loadSettings() {

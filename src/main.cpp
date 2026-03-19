@@ -1,62 +1,51 @@
 #include <Arduino.h>
+#include <WiFi.h>
+#include <esp_task_wdt.h>
+
 #include "KinConyPLC.h"
-#include "PoolNetworkManager.h"
 #include "PoolLogic.h"
+#include "PoolNetworkManager.h"
 #include "PoolWebServer.h"
+#include "PoolMQTT.h"
 
-// --- Object Instantiation Order is Critical Here ---
-
-// 1. Hardware layer first
+// Initialization order is important here
 KinConyPLC plc;
+PoolNetworkManager netMgr;
+PoolLogic logic(plc, netMgr);
+PoolWebServer webServer(logic, netMgr);
+PoolMQTT mqttClient(logic);
 
-// 2. Network layer second
-PoolNetworkManager netMgr; 
-
-// 3. Logic layer (requires Hardware and Network)
-PoolLogic poolLogic(plc, netMgr);
-
-// 4. Web/API layer (requires Logic and Network)
-PoolWebServer webServer(poolLogic, netMgr);
-
-unsigned long lastHeartbeat = 0;
+// Watchdog timeout in seconds
+#define WDT_TIMEOUT 5 
 
 void setup() {
     Serial.begin(115200);
-    delay(2000); // Give serial monitor time to connect
-    Serial.println("\n--- KinCony Pool PLC Booting ---");
+    delay(1000);
+    Serial.println("--- Booting Pool Controller ---");
 
-    // 1. Initialize hardware layer first
-    plc.begin();
+    // HARDWARE SAFETY INITIALIZATION (ESP-IDF v5+ API)
+    esp_task_wdt_config_t wdt_config = {
+        .timeout_ms = WDT_TIMEOUT * 1000,
+        .idle_core_mask = (1 << portNUM_PROCESSORS) - 1, // Monitor all cores
+        .trigger_panic = true                            // Hard reset on timeout
+    };
+    esp_task_wdt_reconfigure(&wdt_config);
+    esp_task_wdt_add(NULL);
 
-    // 2. Initialize logic hardware (relays, sensors)
-    poolLogic.begin();
-
-    // 3. Initialize Networking (This blocks and launches Captive Portal if no Wi-Fi is saved)
-    Serial.println("Initializing Network Manager...");
+    plc.begin(); 
     netMgr.begin();
-
-    // 4. Initialize Web and MQTT Servers
-    Serial.println("Initializing Web & MQTT Servers...");
+    logic.begin();
     webServer.begin();
-
-    Serial.println("Boot Sequence Complete.");
+    mqttClient.begin();
+    
+    Serial.println("Boot sequence complete.");
 }
 
 void loop() {
-    // Tick the core systems
-    poolLogic.loop();
+    esp_task_wdt_reset(); 
+
+    logic.loop();
     netMgr.loop();
     webServer.loop();
-
-    // --- Unit Test / Heartbeat Output ---
-    unsigned long currentMillis = millis();
-    if (currentMillis - lastHeartbeat >= 5000) {
-        lastHeartbeat = currentMillis;
-
-        Serial.println("\n--- System Heartbeat ---");
-        Serial.printf("Wi-Fi Connected: %s\n", netMgr.isConnected() ? "YES" : "NO");
-        Serial.printf("System Mode: %d\n", static_cast<int>(poolLogic.getSystemMode()));
-        Serial.printf("Water Mode: %d\n", static_cast<int>(poolLogic.getWaterMode()));
-        Serial.printf("Free Heap: %d bytes\n", ESP.getFreeHeap());
-    }
+    mqttClient.loop();
 }

@@ -74,7 +74,7 @@ const char index_html[] PROGMEM = R"rawliteral(
     <div class="nav">
         <button id="tab-btn-dashboard" class="active" onclick="switchTab('dashboard')">Dashboard</button>
         <button id="tab-btn-settings" onclick="switchTab('settings')">Settings</button>
-        <button id="tab-btn-wifi" onclick="switchTab('wifi')">Wi-Fi</button>
+        <button id="tab-btn-wifi" onclick="switchTab('wifi')">Network</button>
     </div>
 
     <div class="container">
@@ -89,7 +89,7 @@ const char index_html[] PROGMEM = R"rawliteral(
                     <div class="stat-box"><div>Air Temp</div><div id="val-temp-a" class="stat-val">-- &deg;F</div></div>
                 </div>
                 <p style="text-align: center; color: var(--text-muted); font-size: 0.9rem; margin-top: 15px;">
-                    Time: <span id="val-time">--</span> | IP: <span id="val-ip">--</span>
+                    Time: <span id="val-time">--</span> | IP: <span id="val-ip">--</span> | MQTT: <span id="val-mqtt">--</span>
                 </p>
             </div>
 
@@ -182,20 +182,35 @@ const char index_html[] PROGMEM = R"rawliteral(
             </div>
         </div>
 
-        <!-- ================= WI-FI TAB ================= -->
+        <!-- ================= WI-FI / NETWORK TAB ================= -->
         <div id="tab-wifi" class="tab-content">
             <div class="card">
-                <h2>Network Credentials</h2>
-                <p style="color: var(--text-muted); font-size: 0.9rem;">Update the local Wi-Fi network the controller connects to. The device will reboot upon saving.</p>
+                <h2>Wi-Fi Credentials</h2>
+                <p style="color: var(--text-muted); font-size: 0.9rem;">Warning: Changing this will disconnect the controller. Both fields are required to update.</p>
                 <div class="form-group">
                     <label>SSID (Network Name)</label>
-                    <input type="text" id="wifi-ssid" placeholder="Enter SSID">
+                    <input type="text" id="wifi-ssid" placeholder="Enter new SSID">
                 </div>
                 <div class="form-group">
                     <label>Password</label>
-                    <input type="password" id="wifi-pass" placeholder="Enter Password">
+                    <input type="password" id="wifi-pass" placeholder="Enter new Password">
                 </div>
-                <button class="action-btn btn-primary" onclick="saveWiFi()">Update & Reboot</button>
+                <button class="action-btn btn-primary" onclick="saveWiFi()">Update Wi-Fi & Reboot</button>
+            </div>
+
+            <div class="card">
+                <h2>MQTT Configuration</h2>
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label>Broker IP Address</label>
+                        <input type="text" id="mqtt-broker" placeholder="e.g. 192.168.1.9">
+                    </div>
+                    <div class="form-group">
+                        <label>Broker Port</label>
+                        <input type="number" id="mqtt-port" placeholder="1883">
+                    </div>
+                </div>
+                <button class="action-btn btn-primary" onclick="saveMQTT()">Update MQTT & Reboot</button>
             </div>
 
             <!-- Global System Reboot -->
@@ -212,7 +227,9 @@ const char index_html[] PROGMEM = R"rawliteral(
             document.querySelectorAll('.nav button').forEach(b => b.classList.remove('active'));
             document.getElementById(`tab-${tabId}`).classList.add('active');
             document.getElementById(`tab-btn-${tabId}`).classList.add('active');
+            
             if (tabId === 'settings') loadSettings();
+            if (tabId === 'wifi') loadNetwork();
         }
 
         function showToast(msg, isError = false) {
@@ -258,6 +275,7 @@ const char index_html[] PROGMEM = R"rawliteral(
 
                 document.getElementById('val-time').innerText = data.current_time || "--";
                 document.getElementById('val-ip').innerText = data.ip || "--";
+                document.getElementById('val-mqtt').innerText = data.mqtt_broker || "Not Set";
                 
                 document.getElementById('val-temp-w').innerText = data.temp_water < -100 ? "N/A" : data.temp_water.toFixed(1) + " °F";
                 document.getElementById('val-temp-a').innerText = data.temp_air < -100 ? "N/A" : data.temp_air.toFixed(1) + " °F";
@@ -266,12 +284,12 @@ const char index_html[] PROGMEM = R"rawliteral(
                 const waterModes = ["OFF", "POOL", "SPA"];
                 document.getElementById('val-mode').innerText = modes[data.system_mode];
                 document.getElementById('val-water').innerText = waterModes[data.water_mode];
-                // Update Water Mode Buttons (Highlight active mode)
+                
                 document.getElementById('btn-wm-0').className = (data.water_mode === 0) ? "action-btn active-red" : "action-btn";
                 document.getElementById('btn-wm-1').className = (data.water_mode === 1) ? "action-btn active-actuator" : "action-btn";
                 document.getElementById('btn-wm-2').className = (data.water_mode === 2) ? "action-btn active-actuator" : "action-btn";
 
-                // Only update inputs if they aren't actively being typed in
+                // Update target inputs only if the user isn't actively typing in them
                 if (document.activeElement.id !== 'target-pool') document.getElementById('target-pool').value = data.target_pool_temp;
                 if (document.activeElement.id !== 'target-spa') document.getElementById('target-spa').value = data.target_spa_temp;
 
@@ -289,7 +307,6 @@ const char index_html[] PROGMEM = R"rawliteral(
                     hwToggles.style.opacity = "0.5"; hwToggles.style.pointerEvents = "none";
                 }
 
-                // Relays (Mapped exactly to C++ enum)
                 updateRelayButton('btn-relay-0', data.relay_filter_pump);
                 updateRelayButton('btn-relay-1', data.relay_aux_pump);
                 updateRelayButton('btn-relay-2', data.relay_vacuum_pump);
@@ -330,7 +347,7 @@ const char index_html[] PROGMEM = R"rawliteral(
                 const res = await fetch('/api/override', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ water_mode: modeIdx, timeout: 120 }) // Default 2 hour override
+                    body: JSON.stringify({ water_mode: modeIdx, timeout: 120 })
                 });
                 if (res.ok) {
                     showToast("Water Mode updated.");
@@ -406,14 +423,34 @@ const char index_html[] PROGMEM = R"rawliteral(
         }
 
         // API Calls: Wi-Fi & System
+        async function loadNetwork() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                document.getElementById('wifi-ssid').value = data.ssid || "";
+                document.getElementById('mqtt-broker').value = data.mqtt_broker || "";
+                document.getElementById('mqtt-port').value = data.mqtt_port || "1883";
+            } catch (err) { console.error("Failed to load network settings"); }
+        }
+
         async function saveWiFi() {
             const s = document.getElementById('wifi-ssid').value;
             const p = document.getElementById('wifi-pass').value;
-            if(!s) { showToast("SSID is required", true); return; }
+            if(!s || !p) { showToast("Both SSID and Password are required", true); return; }
             try {
                 const res = await fetch('/api/wifi', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ssid: s, pass: p }) });
                 if (res.ok) { showToast("Wi-Fi updated! Rebooting..."); setTimeout(() => window.location.reload(), 5000); }
                 else showToast("Failed to update Wi-Fi.", true);
+            } catch (err) { showToast("Network error.", true); }
+        }
+
+        async function saveMQTT() {
+            const mBroker = document.getElementById('mqtt-broker').value;
+            const mPort = parseInt(document.getElementById('mqtt-port').value) || 1883;
+            try {
+                const res = await fetch('/api/wifi', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mqtt_broker: mBroker, mqtt_port: mPort }) });
+                if (res.ok) { showToast("MQTT updated! Rebooting..."); setTimeout(() => window.location.reload(), 5000); }
+                else showToast("Failed to update MQTT.", true);
             } catch (err) { showToast("Network error.", true); }
         }
 

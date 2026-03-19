@@ -2,31 +2,24 @@
 #include "WebUI.h"
 #include <ArduinoJson.h>
 #include <WiFi.h>
+#include <string>
 
 PoolWebServer* globalWebServerInstance = nullptr;
 
 PoolWebServer::PoolWebServer(PoolLogic& poolLogic, PoolNetworkManager& netMgr)
-    : _poolLogic(poolLogic), _netMgr(netMgr), _server(80), _mqtt(_wifiClient), _lastMqttPublish(0) {}
+    : _poolLogic(poolLogic), _netMgr(netMgr), _server(80) {}
 
 void PoolWebServer::begin() {
     globalWebServerInstance = this;
     setupRoutes();
     _server.begin();
     Serial.println("HTTP PoolWebServer started on port 80.");
-    _mqtt.setClient(_wifiClient);
-    _mqtt.setServer("192.168.1.9", 1883);
-    _mqtt.setCallback(mqttCallback); 
 }
 
 void PoolWebServer::loop() {
     _server.handleClient();
-    if (WiFi.status() == WL_CONNECTED) {
-        handleMQTT();
-        unsigned long currentMillis = millis();
-        if (currentMillis - _lastMqttPublish >= MQTT_PUBLISH_INTERVAL) {
-            _lastMqttPublish = currentMillis;
-            publishState();
-        }
+    if (_pendingRestart && millis() - _restartTime > 1000) {
+        ESP.restart();
     }
 }
 
@@ -64,9 +57,9 @@ void PoolWebServer::setupRoutes() {
     _server.on("/api/mode", HTTP_OPTIONS, [this]() { sendCORSHeaders(); _server.send(204); });
     _server.on("/api/override", HTTP_OPTIONS, [this]() { sendCORSHeaders(); _server.send(204); });
     _server.on("/api/service", HTTP_OPTIONS, [this]() { sendCORSHeaders(); _server.send(204); });
-    _server.on("/api/settings", HTTP_OPTIONS, [this]() { sendCORSHeaders(); _server.send(204); }); // NEW
-    _server.on("/api/wifi", HTTP_OPTIONS, [this]() { sendCORSHeaders(); _server.send(204); });     // NEW
-    _server.on("/api/reboot", HTTP_OPTIONS, [this]() { sendCORSHeaders(); _server.send(204); });   // NEW
+    _server.on("/api/settings", HTTP_OPTIONS, [this]() { sendCORSHeaders(); _server.send(204); });
+    _server.on("/api/wifi", HTTP_OPTIONS, [this]() { sendCORSHeaders(); _server.send(204); });
+    _server.on("/api/reboot", HTTP_OPTIONS, [this]() { sendCORSHeaders(); _server.send(204); });
     // --- 404 / Captive Portal Catch-All ---
     _server.onNotFound([this]() { handleNotFound(); });
 }
@@ -83,24 +76,31 @@ void PoolWebServer::handleSetWiFi() {
         _server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
         return;
     }
-    String ssid = doc["ssid"] | "";
-    String pass = doc["pass"] | "";
-    if (ssid.length() > 0) {
-        // Save to ESP32 NVS using your preferred method
-        Preferences prefs;
-        prefs.begin("pool_net", false);
-        prefs.putString("ssid", ssid);
-        prefs.putString("pass", pass);
-        prefs.end();
-        sendCORSHeaders();
-        _server.send(200, "application/json", "{\"status\":\"success\"}");
-        // Give the web server 1 second to send the HTTP 200 response before pulling the plug
-        delay(1000); 
-        ESP.restart();
-    } else {
-        sendCORSHeaders();
-        _server.send(400, "application/json", "{\"error\":\"SSID cannot be empty\"}");
+    // ONLY update if both SSID and Password are provided. 
+    if (doc.containsKey("ssid") && doc.containsKey("pass")) {
+        std::string ssid = doc["ssid"].as<std::string>();
+        std::string pass = doc["pass"].as<std::string>();
+        if (!ssid.empty() && !pass.empty()) {
+            _netMgr.setCredentials(ssid.c_str(), pass.c_str()); 
+            Serial.println("Wi-Fi credentials updated via Web UI.");
+        }
     }
+    // MQTT
+    if (doc.containsKey("mqtt_broker")) {
+        std::string mqttBroker = doc["mqtt_broker"].as<std::string>();
+        int mqttPort = doc["mqtt_port"] | 1883;
+        Preferences prefs;
+        prefs.begin("pool_net", false); 
+        prefs.putString("mqtt_broker", mqttBroker.c_str());
+        prefs.putInt("mqtt_port", mqttPort);
+        prefs.end();
+        Serial.println("MQTT settings updated via Web UI.");
+    }
+    sendCORSHeaders();
+    _server.send(200, "application/json", "{\"status\":\"success\"}");
+    // Trigger the deferred restart
+    _pendingRestart = true;
+    _restartTime = millis();
 }
 
 void PoolWebServer::handleGetStatus() {
@@ -110,8 +110,8 @@ void PoolWebServer::handleGetStatus() {
     doc["water_mode"] = static_cast<int>(_poolLogic.getWaterMode());
     doc["current_time"] = _poolLogic.getCurrentTimeString();
     // Network Info
-    doc["ssid"] = WiFi.SSID();
-    doc["ip"] = WiFi.localIP().toString();
+    doc["ssid"] = WiFi.SSID().c_str();
+    doc["ip"] = WiFi.localIP().toString().c_str();
     // Temperatures
     doc["temp_air"] = _poolLogic.getAirTemp();
     doc["temp_water"] = _poolLogic.getWaterTemp();
@@ -133,10 +133,17 @@ void PoolWebServer::handleGetStatus() {
     doc["relay_spa_blower"] = _poolLogic.getRelayState(PoolRelay::SpaBlower);
     doc["relay_pool_lights"] = _poolLogic.getRelayState(PoolRelay::PoolLights);
     doc["relay_vacuum_pump"] = _poolLogic.getRelayState(PoolRelay::VacuumPump);
-    String jsonResponse;
+    // MQTT Broker IP
+    Preferences prefs;
+    prefs.begin("pool_net", true); // true = read-only
+    doc["mqtt_broker"] = prefs.getString("mqtt_broker", "").c_str();
+    doc["mqtt_port"] = prefs.getInt("mqtt_port", 1883);
+    prefs.end();
+
+    std::string jsonResponse;
     serializeJson(doc, jsonResponse);
     sendCORSHeaders();
-    _server.send(200, "application/json", jsonResponse);
+    _server.send(200, "application/json", jsonResponse.c_str());
 }
 
 void PoolWebServer::handleSetMode() {
@@ -200,8 +207,8 @@ void PoolWebServer::handleSetOverride() {
     if (result == "success") {
         _server.send(200, "application/json", "{\"status\":\"success\"}");
     } else {
-        String errorJson = "{\"error\":\"" + String(result.c_str()) + "\"}";
-        _server.send(400, "application/json", errorJson);
+        std::string errorJson = std::string("{\"error\":\"") + result + "\"}";
+        _server.send(400, "application/json", errorJson.c_str());
     }
 }
 
@@ -282,10 +289,10 @@ void PoolWebServer::handleGetSettings() {
     sl["startHour"] = schedL.startHour; sl["startMin"] = schedL.startMin;
     sl["endHour"] = schedL.endHour; sl["endMin"] = schedL.endMin;
     sl["enabled"] = schedL.enabled;
-    String response;
+    std::string response;
     serializeJson(doc, response);
     sendCORSHeaders();
-    _server.send(200, "application/json", response);
+    _server.send(200, "application/json", response.c_str());
 }
 
 void PoolWebServer::handleServiceCommand() {
@@ -310,8 +317,8 @@ void PoolWebServer::handleServiceCommand() {
             _server.send(200, "application/json", "{\"status\":\"success\"}");
         } else {
             // Send the specific error message back to the Web UI
-            String errorJson = "{\"error\":\"" + String(result.c_str()) + "\"}";
-            _server.send(400, "application/json", errorJson);
+            std::string errorJson = std::string("{\"error\":\"") + result + "\"}";
+            _server.send(400, "application/json", errorJson.c_str());
         }
     } else {
         sendCORSHeaders();
@@ -330,7 +337,7 @@ void PoolWebServer::handleNotFound() {
 }
 
 void PoolWebServer::handleWifiSetupGet() {
-    String html = R"rawliteral(
+    const char* html = R"rawliteral(
     <!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
       body { font-family: sans-serif; padding: 20px; text-align: center; background: #f4f4f9; }
@@ -354,22 +361,16 @@ void PoolWebServer::handleWifiSetupGet() {
 }
 
 void PoolWebServer::handleWifiSetupPost() {
-    // The WebServer library inherently returns Arduino Strings
-    String ardSsid = _server.arg("ssid");
-    String ardPass = _server.arg("pass");
-    if (ardSsid.length() > 0) {
-        String successHtml = "<h2>Credentials Saved!</h2><p>Rebooting to connect to <b>" + ardSsid + "</b>...</p>";
-        _server.send(200, "text/html", successHtml);
-        delay(1000); // Give the ESP32 a second to actually send the HTML to the phone
-        // Convert to std::string right at the boundary
-        std::string stdSsid = ardSsid.c_str();
-        std::string stdPass = ardPass.c_str();
-        _netMgr.setCredentials(stdSsid, stdPass); 
+    std::string ssid = _server.arg("ssid").c_str();
+    std::string pass = _server.arg("pass").c_str();
+    if (!ssid.empty()) {
+        std::string successHtml = std::string("<h2>Credentials Saved!</h2><p>Rebooting to connect to <b>") + ssid + "</b>...</p>";
+        _server.send(200, "text/html", successHtml.c_str());
+        _netMgr.setCredentials(ssid, pass);
         Serial.println("Credentials saved. Restarting ESP32...");
-        delay(500); // Brief pause to let serial buffers clear
-        ESP.restart(); // Force reboot to apply new network settings
-    }
-    else {
+        _pendingRestart = true;
+        _restartTime = millis();
+    } else {
         _server.send(400, "text/plain", "SSID cannot be empty.");
     }
 }
@@ -377,62 +378,6 @@ void PoolWebServer::handleWifiSetupPost() {
 void PoolWebServer::handleReboot() {
     sendCORSHeaders();
     _server.send(200, "application/json", "{\"status\":\"rebooting\"}");
-    // Give the browser time to receive the response
-    delay(1000);
-    ESP.restart();
-}
-
-void PoolWebServer::handleMQTT() {
-    if (WiFi.status() != WL_CONNECTED) return;
-    if (!_mqtt.connected()) {
-        Serial.println("Attempting MQTT connection...");
-        if (_mqtt.connect("KinConyPoolController")) {
-            Serial.println("MQTT connected!");
-            _mqtt.subscribe("pool/command");
-        } else {
-            Serial.print("MQTT failed, rc=");
-            Serial.print(_mqtt.state());
-            Serial.println(" try again in next loop.");
-        }
-    }
-    if (_mqtt.connected()) {
-        _mqtt.loop(); 
-    }
-}
-
-void PoolWebServer::publishState() {
-    if (WiFi.status() != WL_CONNECTED) return;
-    if (!_mqtt.connected()) return;
-    JsonDocument doc;
-    doc["system_mode"] = static_cast<int>(_poolLogic.getSystemMode());
-    doc["water_mode"] = static_cast<int>(_poolLogic.getWaterMode());
-    doc["lights_on"] = _poolLogic.isLightsOn();
-    doc["vacuum_on"] = _poolLogic.isVacuumOn();
-    doc["fountain_on"] = _poolLogic.isFountainOn();
-    doc["spa_blower_on"] = _poolLogic.isSpaBlowerOn();
-    doc["heater_active"] = _poolLogic.isHeaterActive();
-    String payload;
-    serializeJson(doc, payload);
-    _mqtt.publish("pool/status", payload.c_str());
-}
-
-void PoolWebServer::mqttCallback(char* topic, byte* payload, unsigned int length) {
-    if (!globalWebServerInstance) return;
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, payload, length);
-    if (error) {
-        Serial.println("MQTT JSON Parse Error");
-        return;
-    }
-    if (String(topic) == "pool/command") {
-        if (!doc["system_mode"].isNull()) {
-            globalWebServerInstance->_poolLogic.setSystemMode(static_cast<SystemMode>(doc["system_mode"].as<int>()));
-            Serial.println("MQTT Command: System Mode Changed");
-        }
-        if (!doc["spa_blower_on"].isNull()) {
-            globalWebServerInstance->_poolLogic.overrideSpaBlower(doc["spa_blower_on"].as<bool>(), 120);
-            Serial.println("MQTT Command: Spa Blower Override");
-        }
-        globalWebServerInstance->publishState();
-    }
+    _pendingRestart = true;
+    _restartTime = millis();
 }

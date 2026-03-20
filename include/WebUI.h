@@ -127,13 +127,13 @@ const char index_html[] PROGMEM = R"rawliteral(
                 <p style="color: var(--text-muted); font-size: 0.85rem;">Warning: Service mode overrides all schedules and safeties.</p>
                 
                 <div id="hardware-toggles" style="opacity: 0.5; pointer-events: none; margin-top: 15px;">
-                    <div class="control-row"><span>Relay 1: Filter Pump</span><button class="action-btn" id="btn-relay-0" onclick="setRelay(0)">OFF</button></div>
-                    <div class="control-row"><span>Relay 2: Aux/Fountain Pump</span><button class="action-btn" id="btn-relay-1" onclick="setRelay(1)">OFF</button></div>
-                    <div class="control-row"><span>Relay 3: Vacuum Pump</span><button class="action-btn" id="btn-relay-2" onclick="setRelay(2)">OFF</button></div>
-                    <div class="control-row"><span>Relay 4: Spa Blower</span><button class="action-btn" id="btn-relay-3" onclick="setRelay(3)">OFF</button></div>
-                    <div class="control-row"><span>Relay 5: Pool Lights</span><button class="action-btn" id="btn-relay-4" onclick="setRelay(4)">OFF</button></div>
-                    <div class="control-row"><span>Relay 6: Intake Actuator</span><button class="action-btn" id="btn-relay-5" onclick="setRelay(5)">POOL</button></div>
-                    <div class="control-row"><span>Relay 7: Return Actuator</span><button class="action-btn" id="btn-relay-6" onclick="setRelay(6)">SPLIT</button></div>
+                    <div class="control-row"><span>Relay 1: Intake Actuator</span><button class="action-btn" id="btn-relay-0" onclick="setRelay(0)">POOL</button></div>
+                    <div class="control-row"><span>Relay 2: Return Actuator</span><button class="action-btn" id="btn-relay-1" onclick="setRelay(1)">SPLIT</button></div>
+                    <div class="control-row"><span>Relay 3: Filter Pump</span><button class="action-btn" id="btn-relay-2" onclick="setRelay(2)">OFF</button></div>
+                    <div class="control-row"><span>Relay 4: Aux/Fountain Pump</span><button class="action-btn" id="btn-relay-3" onclick="setRelay(3)">OFF</button></div>
+                    <div class="control-row"><span>Relay 5: Vacuum Pump</span><button class="action-btn" id="btn-relay-4" onclick="setRelay(4)">OFF</button></div>
+                    <div class="control-row"><span>Relay 6: Spa Blower</span><button class="action-btn" id="btn-relay-5" onclick="setRelay(5)">OFF</button></div>
+                    <div class="control-row"><span>Relay 7: Pool Lights</span><button class="action-btn" id="btn-relay-6" onclick="setRelay(6)">OFF</button></div>
                     <div class="control-row"><span>Relay 8: Heater Igniter</span><button class="action-btn" id="btn-relay-7" onclick="setRelay(7)">OFF</button></div>
                 </div>
             </div>
@@ -307,13 +307,13 @@ const char index_html[] PROGMEM = R"rawliteral(
                     hwToggles.style.opacity = "0.5"; hwToggles.style.pointerEvents = "none";
                 }
 
-                updateRelayButton('btn-relay-0', data.relay_filter_pump);
-                updateRelayButton('btn-relay-1', data.relay_aux_pump);
-                updateRelayButton('btn-relay-2', data.relay_vacuum_pump);
-                updateRelayButton('btn-relay-3', data.relay_spa_blower);
-                updateRelayButton('btn-relay-4', data.relay_pool_lights);
-                updateActuatorButton('btn-relay-5', data.actuator_intake_spa, "POOL", "SPA");
-                updateActuatorButton('btn-relay-6', data.actuator_return_spa, "SPLIT", "SPA");
+                updateActuatorButton('btn-relay-0', data.actuator_intake_spa, "POOL", "SPA");
+                updateActuatorButton('btn-relay-1', data.actuator_return_spa, "SPLIT", "SPA");
+                updateRelayButton('btn-relay-2', data.relay_filter_pump);
+                updateRelayButton('btn-relay-3', data.relay_aux_pump);
+                updateRelayButton('btn-relay-4', data.relay_vacuum_pump);
+                updateRelayButton('btn-relay-5', data.relay_spa_blower);
+                updateRelayButton('btn-relay-6', data.relay_pool_lights);
                 updateRelayButton('btn-relay-7', data.relay_heater_igniter);
 
             } catch (err) { console.error("Status fetch failed", err); }

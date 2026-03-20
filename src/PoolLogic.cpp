@@ -170,6 +170,8 @@ bool PoolLogic::getRelayState(PoolRelay relay) const {
 
 // User overrides
 std::string PoolLogic::overrideWaterMode(WaterMode mode, uint16_t timeoutMinutes) {
+    if (_currentMode == SystemMode::SERVICE)
+        return "System is in SERVICE mode. User overrides are locked out.";
     // HA cannot turn the pool off
     if (mode == WaterMode::OFF) {
         Serial.println("Access denied: OFF is only available in SERVICE mode.");
@@ -201,6 +203,8 @@ std::string PoolLogic::overrideWaterMode(WaterMode mode, uint16_t timeoutMinutes
 }
 
 std::string PoolLogic::overrideFountain(bool state, uint16_t timeoutMinutes) {
+    if (_currentMode == SystemMode::SERVICE)
+        return "System is in SERVICE mode. User overrides are locked out.";
     _fountainState = state;
     if (state) {
         _currentMode = SystemMode::USER_OVERRIDE;
@@ -213,6 +217,8 @@ std::string PoolLogic::overrideFountain(bool state, uint16_t timeoutMinutes) {
 }
 
 std::string PoolLogic::overrideVacuum(bool state, uint16_t timeoutMinutes) {
+    if (_currentMode == SystemMode::SERVICE)
+        return "System is in SERVICE mode. User overrides are locked out.";
     DateTime now = _plc.getCurrentTime();
     if (state) {
         if (isTimeInSchedule(now, _schedVacuum)) {
@@ -242,6 +248,8 @@ std::string PoolLogic::overrideVacuum(bool state, uint16_t timeoutMinutes) {
 }
 
 std::string PoolLogic::overrideLights(bool state, uint16_t timeoutMinutes) {
+    if (_currentMode == SystemMode::SERVICE)
+        return "System is in SERVICE mode. User overrides are locked out.";
     DateTime now = _plc.getCurrentTime();
     if (state) {
         if (isTimeInSchedule(now, _schedLights)) {
@@ -271,6 +279,8 @@ std::string PoolLogic::overrideLights(bool state, uint16_t timeoutMinutes) {
 }
 
 std::string PoolLogic::overrideSpaBlower(bool state, uint16_t timeoutMinutes) {
+    if (_currentMode == SystemMode::SERVICE)
+        return "System is in SERVICE mode. User overrides are locked out.";
     _spaBlowerState = state;
     if (state) {
         _currentMode = SystemMode::USER_OVERRIDE;
@@ -283,6 +293,8 @@ std::string PoolLogic::overrideSpaBlower(bool state, uint16_t timeoutMinutes) {
 }
 
 std::string PoolLogic::overrideHeater(bool enable, uint16_t timeoutMinutes) {
+    if (_currentMode == SystemMode::SERVICE)
+        return "System is in SERVICE mode. User overrides are locked out.";
     if (_currentWaterMode == WaterMode::SPA) return "Heater controlled by Spa Mode.";
     _heaterEnabled = enable;
     if (enable) {

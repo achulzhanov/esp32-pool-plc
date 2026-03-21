@@ -119,6 +119,13 @@ private:
 
     unsigned long _lastTimeSync = 0;
     unsigned long _lastFailsafePrint = 0;
+
+    // Physical service button (DI1, latching NO to GND)
+    bool _hardwareLockout = false;
+    bool _serviceButtonLastRead = false;
+    unsigned long _serviceButtonDebounceStart = 0;
+    void checkServiceButton();
+
     void syncTime();
 
     bool isTimeInSchedule(const DateTime& now, const Schedule& sched) const;

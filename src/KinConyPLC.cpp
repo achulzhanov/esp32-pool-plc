@@ -48,6 +48,17 @@ bool KinConyPLC::getRelayState(PoolRelay relay) const {
     }
 }
 
+bool KinConyPLC::isServiceButtonActive() {
+    // Read all 16 bits from PCF8575. The chip sends low byte (P0-P7, relays) first,
+    // then high byte (P8-P15, digital inputs). DI1 = P8 = bit 0 of the high byte.
+    // The NO button connects DI1 to GND, so active = LOW = 0.
+    Wire.requestFrom((uint8_t)I2C_ADDR_PCF8575, (uint8_t)2);
+    if (Wire.available() < 2) return false; // Safe default: not active on I2C failure
+    Wire.read();                             // Discard low byte (relay states)
+    uint8_t hi = Wire.read();               // High byte holds DI1-DI8
+    return !(hi & 0x01);                    // DI1 = bit 0; active LOW, so invert
+}
+
 void KinConyPLC::writeI2C(uint16_t data) {
     // PCF8575 is active-low, so we need to invert the bits
     uint16_t invertedData = ~data;

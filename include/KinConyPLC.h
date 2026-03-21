@@ -36,6 +36,7 @@ public:
     void begin();
     void setRelay(PoolRelay relay, bool state);
     bool getRelayState(PoolRelay relay) const;
+    bool isServiceButtonActive(); // DI1 (P8): NO button to GND, active LOW
     float getWaterTemp() const;
     void setWaterTempOffset(float offset);
     float getWaterTempOffset() const;

@@ -19,6 +19,7 @@ void PoolLogic::begin() {
 }
 
 void PoolLogic::loop() {
+    checkServiceButton(); // Must run first — hardware can override everything
     syncTime();
     evaluateSafetyInterlocks();
     // Service mode exits loop, web admin will call _plc.setRelay() directly
@@ -105,7 +106,48 @@ void PoolLogic::cancelAllOverrides() {
     Serial.println("Overrides cancelled. Reverted to AUTO / POOL mode.");
 }
 
+void PoolLogic::checkServiceButton() {
+    bool buttonRead = _plc.isServiceButtonActive();
+
+    // Reset the debounce timer whenever the raw reading changes
+    if (buttonRead != _serviceButtonLastRead) {
+        _serviceButtonLastRead = buttonRead;
+        _serviceButtonDebounceStart = millis();
+    }
+
+    // Only act once the reading has been stable for 100ms
+    if (millis() - _serviceButtonDebounceStart < 100) return;
+
+    if (buttonRead && !_hardwareLockout) {
+        // Button newly latched — engage hardware lockout
+        Serial.println("HARDWARE: Service button latched. Engaging SERVICE lockout.");
+        _hardwareLockout = true;
+        if (_currentMode != SystemMode::SERVICE) {
+            cancelAllOverrides(); // Zero all timers and intent states cleanly
+        }
+        _currentMode = SystemMode::SERVICE;
+        _currentWaterMode = WaterMode::OFF;
+
+    } else if (!buttonRead && _hardwareLockout) {
+        // Button newly released — disengage hardware lockout
+        Serial.println("HARDWARE: Service button released. Returning to AUTO.");
+        if (_plc.getRelayState(PoolRelay::HeaterIgniter)) {
+            Serial.println("Heater was ON at SERVICE exit. Forcing 5-min pump cooldown.");
+            _heaterCooldownEnd = millis() + (5 * 60000UL);
+            _lastCallForHeat = false;
+        }
+        _hardwareLockout = false;
+        cancelAllOverrides(); // Resets mode to AUTO and waterMode to POOL
+    }
+}
+
 void PoolLogic::setSystemMode(SystemMode mode) {
+    // Hardware lockout: the physical service button is latched.
+    // No software command — web admin or MQTT — can exit SERVICE mode while it is held.
+    if (_hardwareLockout && mode != SystemMode::SERVICE) {
+        Serial.println("setSystemMode: Blocked by hardware service button lockout.");
+        return;
+    }
     if (_currentMode == SystemMode::SERVICE && mode != SystemMode::SERVICE) {
         // If the physical heater relay is currently ON when we exit manual control
         if (_plc.getRelayState(PoolRelay::HeaterIgniter)) {

@@ -4,6 +4,8 @@
 
 An open-source, custom-built hardware and software solution for intelligent pool automation. Designed around the robust Espressif ESP32-S3 microarchitecture, this controller safely orchestrates high-voltage pool pumps, low-voltage valve actuators, standard pool heaters, and environmental temperature monitoring.
 
+<img src="hardware/photos/IMG_4552.jpeg" alt="Controller Internals" width="800">
+
 ## Purpose & Autonomy
 This project replaces expensive, proprietary pool automation panels with a modern, easily maintainable, and fully encapsulated C++ Object-Oriented architecture. It safely isolates the low-voltage logic from the high-voltage mains, utilizing a dedicated 24VDC rail for heavy-duty relay coils and a 24VAC rail for standard pool industry actuators.
 

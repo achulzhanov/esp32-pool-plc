@@ -44,10 +44,12 @@ private:
 
     unsigned long _bootTime = 0;
     bool _hasConnectedOnce = false;
+    bool _servicesStarted = false; // mDNS + OTA, started once on first IP
 
     bool attemptEthernet();
     bool attemptWiFi();
     void startCaptivePortal();
+    void beginNetworkServices();
     static void networkEventCallback(WiFiEvent_t event);
 };
 

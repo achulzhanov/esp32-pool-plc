@@ -71,23 +71,34 @@ void KinConyPLC::writeI2C(uint16_t data) {
 // Analog read and Steinhart-Hart conversion
 float KinConyPLC::getWaterTemp() const {
     int analogValue = analogRead(PIN_ANALOG_WATER);
-    if (analogValue <= 10 || analogValue >= 4090) {
-        return -127.0;
+    // The KinCony A1 terminal has an internal hardware voltage divider between the
+    // terminal block and the ESP32 ADC pin (input protection for industrial 0-5V signals).
+    // The ADC does NOT read the terminal voltage directly.
+    //
+    // Measurements (desk, NTC disconnected, external 10kΩ pull-up to 3.304V):
+    //   Terminal voltage: 1.990V   →  R_int = 10k × 1.990 / (3.304 - 1.990) = 15,145Ω
+    //   ADC count:        ~1540    →  Confirmed by ghost reading of ~78°F = 25°C = 10kΩ NTC
+    //
+    // These two constants fully capture the hardware:
+    //   R_THEV  = Thevenin resistance seen from terminal = R_ext ∥ R_int = 10k ∥ 15.1k
+    //   ADC_OC  = ADC count when NTC is disconnected (open circuit)
+    const float R_THEV = 6022.0f; // Ω — derived from terminal voltage measurement
+    const int   ADC_OC = 1520;    // counts — calibrate with NTC disconnected
+    if (analogValue <= 10 || analogValue >= ADC_OC - 50) {
+        return -127.0f; // Short circuit (≤10) or open circuit / sensor fault (≥ADC_OC)
     }
-    // Convert 12-bit ADC to resistance
-    // Assumes 10kOhm series resistor
-    float resistance = (4095.0 / analogValue) - 1.0;
-    resistance = 10000.0 / resistance;
-    // Steinhart-Hart equation (NTC 10k 3950)
-    float steinhart = resistance / 10000.0;
+    // NTC = R_THEV × ADC / (ADC_OC − ADC)
+    // Derivation: Thevenin divider, V_A = V_oc × NTC/(R_THEV + NTC), ADC ∝ V_A
+    float resistance = R_THEV * analogValue / (ADC_OC - analogValue);
+    // Steinhart-Hart equation (NTC 10k B=3950)
+    float steinhart = resistance / 10000.0f;
     steinhart = log(steinhart);
-    steinhart /= 3950.0;
-    steinhart += 1.0 / (25.0 + 273.15);
-    steinhart = 1.0 / steinhart;
-    steinhart -= 273.15;
-    // Convert to Fahrenheit
-    float tempF = (steinhart * 9.0 / 5.0) + 32.0;
-    return tempF + _waterTempOffset;
+    steinhart /= 3950.0f;
+    steinhart += 1.0f / (25.0f + 273.15f);
+    steinhart = 1.0f / steinhart;
+    steinhart -= 273.15f;
+    // Convert Celsius to Fahrenheit
+    return (steinhart * 9.0f / 5.0f) + 32.0f + _waterTempOffset;
 }
 
 void KinConyPLC::setWaterTempOffset(float offset) {

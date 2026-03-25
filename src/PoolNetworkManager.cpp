@@ -1,6 +1,9 @@
 #include "PoolNetworkManager.h"
 #include <SPI.h>
 #include <DNSServer.h>
+#include <ArduinoOTA.h>
+#include <ESPmDNS.h>
+#include <esp_task_wdt.h>
 using std::string;
 
 // Static pointer so static hardware callback can access the class variables
@@ -34,6 +37,13 @@ void PoolNetworkManager::loop() {
     // automatically open login page
     if (_currentState == NetState::AP_MODE) {
         dnsServer.processNextRequest();
+    }
+    // Start mDNS and OTA exactly once, on first successful IP assignment
+    if (!_servicesStarted && isConnected()) {
+        beginNetworkServices();
+    }
+    if (_servicesStarted) {
+        ArduinoOTA.handle();
     }
     if (_currentState == NetState::DISCONNECTED) {
         // 5-minute initial boot grace period
@@ -130,6 +140,51 @@ void PoolNetworkManager::startCaptivePortal() {
     Serial.print("AP IP address: ");
     Serial.println(WiFi.softAPIP());
     _currentState = NetState::AP_MODE;
+}
+
+void PoolNetworkManager::beginNetworkServices() {
+    // --- mDNS ---
+    // Resolves poolcontrol.local on the network.
+    // Both the web admin and the Arduino IDE OTA discovery use this hostname.
+    if (MDNS.begin("poolcontrol")) {
+        MDNS.addService("http", "tcp", 80); // Advertise the web admin on port 80
+        Serial.println("mDNS started: poolcontrol.local");
+    } else {
+        Serial.println("mDNS start failed.");
+    }
+
+    // --- ArduinoOTA ---
+    ArduinoOTA.setHostname("poolcontrol"); // Matches mDNS name for IDE discovery
+
+    // Optional: set an OTA password stored in NVS ("ota_pass" key, "network" namespace).
+    // Leave the key unset (or empty) to require no password on the local network.
+    string otaPass = string(_prefs.getString("ota_pass", "").c_str());
+    if (!otaPass.empty()) {
+        ArduinoOTA.setPassword(otaPass.c_str());
+    }
+
+    ArduinoOTA.onStart([]() {
+        // Disable the hardware watchdog before flash write begins.
+        // OTA holds the CPU for several seconds; the 5s WDT would otherwise
+        // panic-reset the chip mid-flash and brick the firmware.
+        esp_task_wdt_delete(NULL);
+        Serial.println("OTA: Starting update — watchdog paused.");
+    });
+    ArduinoOTA.onEnd([]() {
+        // Device auto-reboots after this; no need to re-enable the watchdog.
+        Serial.println("OTA: Complete. Rebooting...");
+    });
+    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+        Serial.printf("OTA: %u%%\r", progress * 100 / total);
+    });
+    ArduinoOTA.onError([](ota_error_t error) {
+        Serial.printf("OTA Error [%u]. Rebooting to safe state.\n", error);
+        ESP.restart();
+    });
+
+    ArduinoOTA.begin();
+    _servicesStarted = true;
+    Serial.println("ArduinoOTA ready.");
 }
 
 void PoolNetworkManager::networkEventCallback(WiFiEvent_t event) {

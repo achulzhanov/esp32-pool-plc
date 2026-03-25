@@ -108,35 +108,39 @@ void PoolLogic::cancelAllOverrides() {
 
 void PoolLogic::checkServiceButton() {
     bool buttonRead = _plc.isServiceButtonActive();
+    unsigned long now = millis();
 
     // Reset the debounce timer whenever the raw reading changes
     if (buttonRead != _serviceButtonLastRead) {
         _serviceButtonLastRead = buttonRead;
-        _serviceButtonDebounceStart = millis();
+        _serviceButtonDebounceStart = now;
     }
 
-    // Only act once the reading has been stable for 100ms
-    if (millis() - _serviceButtonDebounceStart < 100) return;
+    // Require 500ms of stable reading before acting (robust against I2C glitches and contact bounce)
+    if (now - _serviceButtonDebounceStart < 500) return;
 
     if (buttonRead && !_hardwareLockout) {
         // Button newly latched — engage hardware lockout
-        Serial.println("HARDWARE: Service button latched. Engaging SERVICE lockout.");
         _hardwareLockout = true;
-        if (_currentMode != SystemMode::SERVICE) {
-            cancelAllOverrides(); // Zero all timers and intent states cleanly
-        }
+        _serviceButtonDebounceStart = now; // Reset: opposite action requires a fresh 500ms
+        Serial.println("HARDWARE: Service button latched. Engaging SERVICE lockout.");
+        cancelAllOverrides(); // Zero all timers and intent states cleanly
         _currentMode = SystemMode::SERVICE;
         _currentWaterMode = WaterMode::OFF;
-
+        // Explicitly drive all relays off — executeHardwareStates() won't run in SERVICE mode
+        for (uint8_t i = 0; i <= static_cast<uint8_t>(PoolRelay::HeaterIgniter); i++) {
+            _plc.setRelay(static_cast<PoolRelay>(i), false);
+        }
     } else if (!buttonRead && _hardwareLockout) {
         // Button newly released — disengage hardware lockout
+        _hardwareLockout = false;
+        _serviceButtonDebounceStart = now; // Reset: opposite action requires a fresh 500ms
         Serial.println("HARDWARE: Service button released. Returning to AUTO.");
         if (_plc.getRelayState(PoolRelay::HeaterIgniter)) {
             Serial.println("Heater was ON at SERVICE exit. Forcing 5-min pump cooldown.");
             _heaterCooldownEnd = millis() + (5 * 60000UL);
             _lastCallForHeat = false;
         }
-        _hardwareLockout = false;
         cancelAllOverrides(); // Resets mode to AUTO and waterMode to POOL
     }
 }
@@ -411,7 +415,7 @@ void PoolLogic::evaluateThermostat() {
             _lastFailsafePrint = millis();
         }
     }
-    if (heatingAllowed && currentTemp < (targetTemp - 1.0)) {
+    if (heatingAllowed && currentTemp < (targetTemp - 2.0)) {
         _callForHeat = true;
     } else if (!heatingAllowed || currentTemp >= targetTemp) {
         _callForHeat = false;

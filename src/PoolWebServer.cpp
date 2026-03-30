@@ -114,6 +114,7 @@ void PoolWebServer::handleGetStatus() {
     doc["ip"] = WiFi.localIP().toString().c_str();
     // Temperatures
     doc["temp_air"] = _poolLogic.getAirTemp();
+    doc["air_sensor_count"] = _poolLogic.getAirSensorCount(); // 0 = DS18B20 not found on 1-Wire bus
     doc["temp_water"] = _poolLogic.getWaterTemp();
     doc["target_pool_temp"] = _poolLogic.getTargetTempPool();
     doc["target_spa_temp"] = _poolLogic.getTargetTempSpa();

@@ -41,6 +41,7 @@ public:
     void setWaterTempOffset(float offset);
     float getWaterTempOffset() const;
     float getAirTemp();
+    int getAirSensorCount();
     DateTime getCurrentTime();
     void setTime(const DateTime& dt);
 
@@ -51,6 +52,8 @@ private:
     RTC_DS3231 _rtc;
     Preferences _prefs;
     float _waterTempOffset = 0.0;
+    unsigned long _lastAirTempRequest = 0;
+    float _cachedAirTemp = -127.0f;
     void writeI2C(uint16_t data);
 };
 

@@ -509,6 +509,10 @@ float PoolLogic::getAirTemp() const {
     return _plc.getAirTemp();
 }
 
+int PoolLogic::getAirSensorCount() const {
+    return _plc.getAirSensorCount();
+}
+
 float PoolLogic::getWaterTemp() const {
     return _plc.getWaterTemp();
 }

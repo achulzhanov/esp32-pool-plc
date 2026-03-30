@@ -59,6 +59,7 @@ public:
     float getTargetTempPool() const;
     float getTargetTempSpa() const;
     float getAirTemp() const;
+    int getAirSensorCount() const;
     float getWaterTemp() const;
     float getFreezeProtectTemp() const;
     float getWaterTempOffset() const;

@@ -111,9 +111,24 @@ float KinConyPLC::getWaterTempOffset() const {
 }
 
 float KinConyPLC::getAirTemp() {
-    float tempF = _airSensor.getTempFByIndex(0);
-    _airSensor.requestTemperatures();
-    return tempF;
+    unsigned long now = millis();
+    if (now - _lastAirTempRequest >= 1000) {
+        // If no sensor was found at boot (loose/late connection), re-scan the bus.
+        if (_airSensor.getDeviceCount() == 0) {
+            _airSensor.begin();
+        }
+        // Read result of the previous conversion, then start a new one.
+        // DS18B20 needs ~750ms to convert; calling requestTemperatures() any faster
+        // would continuously restart the conversion and it would never finish.
+        _cachedAirTemp = _airSensor.getTempFByIndex(0); // -127 if device still not found
+        _airSensor.requestTemperatures();
+        _lastAirTempRequest = now;
+    }
+    return _cachedAirTemp;
+}
+
+int KinConyPLC::getAirSensorCount() {
+    return _airSensor.getDeviceCount();
 }
 
 DateTime KinConyPLC::getCurrentTime() {

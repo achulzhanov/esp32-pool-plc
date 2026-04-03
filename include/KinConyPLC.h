@@ -31,7 +31,7 @@ public:
     static constexpr uint8_t I2C_ADDR_DS3231 = 0x68;
 
     static constexpr uint8_t PIN_ANALOG_WATER = 7; // A1
-    static constexpr uint8_t PIN_1WIRE_AIR = 40;   // S1
+    static constexpr uint8_t PIN_1WIRE_AIR = 13;   // S2 (GPIO13) — S1/GPIO40 is JTAG MTDO, conflicts with Arduino framework
 
     void begin();
     void setRelay(PoolRelay relay, bool state);

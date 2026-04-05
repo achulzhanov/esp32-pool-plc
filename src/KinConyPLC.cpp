@@ -68,9 +68,8 @@ void KinConyPLC::writeI2C(uint16_t data) {
     Wire.endTransmission();
 }
 
-// Analog read and Steinhart-Hart conversion
+// Analog read and Steinhart-Hart conversion with EMA smoothing
 float KinConyPLC::getWaterTemp() const {
-    int analogValue = analogRead(PIN_ANALOG_WATER);
     // The KinCony A1 terminal has an internal hardware voltage divider between the
     // terminal block and the ESP32 ADC pin (input protection for industrial 0-5V signals).
     // The ADC does NOT read the terminal voltage directly.
@@ -84,8 +83,19 @@ float KinConyPLC::getWaterTemp() const {
     //   ADC_OC  = ADC count when NTC is disconnected (open circuit)
     const float R_THEV = 6022.0f; // Ω — derived from terminal voltage measurement
     const int   ADC_OC = 1520;    // counts — calibrate with NTC disconnected
+    // EMA smoothing to suppress 60Hz noise coupled from nearby 24VAC wiring.
+    // Rate-limited to one ADC read per 500ms for a predictable time constant:
+    //   α=0.1 at 500ms intervals → ~5 second time constant, ~0.1°F contribution per noise spike.
+    const float ALPHA = 0.1f;
+    unsigned long now = millis();
+    if (now - _lastWaterTempRead < 500) {
+        return _waterTempEMAInit ? _waterTempEMA : -127.0f;
+    }
+    _lastWaterTempRead = now;
+    int analogValue = analogRead(PIN_ANALOG_WATER);
     if (analogValue <= 10 || analogValue >= ADC_OC - 50) {
-        return -127.0f; // Short circuit (≤10) or open circuit / sensor fault (≥ADC_OC)
+        // Short circuit (≤10) or open circuit / sensor fault (≥ADC_OC): hold last valid reading
+        return _waterTempEMAInit ? _waterTempEMA : -127.0f;
     }
     // NTC = R_THEV × ADC / (ADC_OC − ADC)
     // Derivation: Thevenin divider, V_A = V_oc × NTC/(R_THEV + NTC), ADC ∝ V_A
@@ -97,8 +107,14 @@ float KinConyPLC::getWaterTemp() const {
     steinhart += 1.0f / (25.0f + 273.15f);
     steinhart = 1.0f / steinhart;
     steinhart -= 273.15f;
-    // Convert Celsius to Fahrenheit
-    return (steinhart * 9.0f / 5.0f) + 32.0f + _waterTempOffset;
+    float rawTemp = (steinhart * 9.0f / 5.0f) + 32.0f + _waterTempOffset;
+    if (!_waterTempEMAInit) {
+        _waterTempEMA = rawTemp;
+        _waterTempEMAInit = true;
+    } else {
+        _waterTempEMA = ALPHA * rawTemp + (1.0f - ALPHA) * _waterTempEMA;
+    }
+    return _waterTempEMA;
 }
 
 void KinConyPLC::setWaterTempOffset(float offset) {

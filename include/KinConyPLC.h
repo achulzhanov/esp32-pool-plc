@@ -52,6 +52,9 @@ private:
     RTC_DS3231 _rtc;
     Preferences _prefs;
     float _waterTempOffset = 0.0;
+    mutable unsigned long _lastWaterTempRead = 0;
+    mutable float _waterTempEMA = -127.0f;
+    mutable bool _waterTempEMAInit = false;
     unsigned long _lastAirTempRequest = 0;
     float _cachedAirTemp = -127.0f;
     void writeI2C(uint16_t data);

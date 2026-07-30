@@ -16,6 +16,10 @@ void PoolWebServer::begin() {
     Serial.println("HTTP PoolWebServer started on port 80.");
 }
 
+void PoolWebServer::setMQTT(PoolMQTT& mqtt) {
+    _mqtt = &mqtt;
+}
+
 void PoolWebServer::loop() {
     _server.handleClient();
     if (_pendingRestart && millis() - _restartTime > 1000) {
@@ -90,9 +94,26 @@ void PoolWebServer::handleSetWiFi() {
         std::string mqttBroker = doc["mqtt_broker"].as<std::string>();
         int mqttPort = doc["mqtt_port"] | 1883;
         Preferences prefs;
-        prefs.begin("pool_net", false); 
+        prefs.begin("pool_net", false);
         prefs.putString("mqtt_broker", mqttBroker.c_str());
         prefs.putInt("mqtt_port", mqttPort);
+
+        // Broker credentials. An empty username means the broker allows anonymous
+        // connections, so the stored password is dropped along with it. A username
+        // with no password means "keep whatever is already in NVS" — the Web UI
+        // never receives the saved password, so it cannot send it back to us.
+        if (doc.containsKey("mqtt_user")) {
+            std::string mqttUser = doc["mqtt_user"].as<std::string>();
+            prefs.putString("mqtt_user", mqttUser.c_str());
+            if (mqttUser.empty()) {
+                prefs.remove("mqtt_pass");
+            } else if (doc.containsKey("mqtt_pass")) {
+                std::string mqttPass = doc["mqtt_pass"].as<std::string>();
+                if (!mqttPass.empty()) {
+                    prefs.putString("mqtt_pass", mqttPass.c_str());
+                }
+            }
+        }
         prefs.end();
         Serial.println("MQTT settings updated via Web UI.");
     }
@@ -109,9 +130,11 @@ void PoolWebServer::handleGetStatus() {
     doc["system_mode"] = static_cast<int>(_poolLogic.getSystemMode());
     doc["water_mode"] = static_cast<int>(_poolLogic.getWaterMode());
     doc["current_time"] = _poolLogic.getCurrentTimeString();
-    // Network Info
-    doc["ssid"] = WiFi.SSID().c_str();
-    doc["ip"] = WiFi.localIP().toString().c_str();
+    // Network Info. Report whichever interface actually holds the route, otherwise
+    // an Ethernet-connected controller shows 0.0.0.0. Assign the Arduino Strings
+    // directly so ArduinoJson copies them instead of referencing freed temporaries.
+    doc["ssid"] = WiFi.SSID();
+    doc["ip"] = _netMgr.isEthernet() ? ETH.localIP().toString() : WiFi.localIP().toString();
     // Temperatures
     doc["temp_air"] = _poolLogic.getAirTemp();
     doc["air_sensor_count"] = _poolLogic.getAirSensorCount(); // 0 = DS18B20 not found on 1-Wire bus
@@ -134,12 +157,21 @@ void PoolWebServer::handleGetStatus() {
     doc["relay_spa_blower"] = _poolLogic.getRelayState(PoolRelay::SpaBlower);
     doc["relay_pool_lights"] = _poolLogic.getRelayState(PoolRelay::PoolLights);
     doc["relay_vacuum_pump"] = _poolLogic.getRelayState(PoolRelay::VacuumPump);
-    // MQTT Broker IP
+    // MQTT Broker settings.
+    // Assign the Arduino String itself, not .c_str() — ArduinoJson stores a bare
+    // const char* by reference, which would dangle once the temporary is destroyed.
     Preferences prefs;
     prefs.begin("pool_net", true); // true = read-only
-    doc["mqtt_broker"] = prefs.getString("mqtt_broker", "").c_str();
+    doc["mqtt_broker"] = prefs.getString("mqtt_broker", "");
     doc["mqtt_port"] = prefs.getInt("mqtt_port", 1883);
+    doc["mqtt_user"] = prefs.getString("mqtt_user", "");
+    // Never echo the stored password back to the browser. The UI only needs to
+    // know whether one is on file so it can label the blank field correctly.
+    doc["mqtt_pass_set"] = prefs.getString("mqtt_pass", "").length() > 0;
     prefs.end();
+    // Live broker connection state, so a rejected login is visible in the UI.
+    doc["mqtt_connected"] = _mqtt ? _mqtt->isConnected() : false;
+    doc["mqtt_state"] = _mqtt ? _mqtt->getState() : -1;
 
     std::string jsonResponse;
     serializeJson(doc, jsonResponse);

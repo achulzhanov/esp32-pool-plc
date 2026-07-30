@@ -210,6 +210,24 @@ const char index_html[] PROGMEM = R"rawliteral(
                         <input type="number" id="mqtt-port" placeholder="1883">
                     </div>
                 </div>
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label>Username</label>
+                        <input type="text" id="mqtt-user" placeholder="Blank = anonymous" autocomplete="off">
+                    </div>
+                    <div class="form-group">
+                        <label>Password</label>
+                        <input type="password" id="mqtt-pass" placeholder="Enter password" autocomplete="new-password">
+                    </div>
+                </div>
+                <p style="color: var(--text-muted); font-size: 0.85rem;">
+                    Leave the password blank to keep the one already saved. Clearing the username
+                    deletes the saved credentials and connects anonymously.
+                </p>
+                <div class="control-row">
+                    <span style="color: var(--text-muted); font-size: 0.9rem;">Broker Status</span>
+                    <span id="mqtt-status" style="font-size: 0.9rem;">--</span>
+                </div>
                 <button class="action-btn btn-primary" onclick="saveMQTT()">Update MQTT & Reboot</button>
             </div>
 
@@ -220,6 +238,26 @@ const char index_html[] PROGMEM = R"rawliteral(
 
     <script>
         let inServiceMode = false;
+
+        // PubSubClient::state() codes, mirrored from mqttStateText() in PoolMQTT.cpp
+        const MQTT_STATES = {
+            "-4": "Connection timed out",
+            "-3": "Connection lost",
+            "-2": "Cannot reach broker",
+            "-1": "Disconnected",
+            "0": "Connected",
+            "1": "Bad protocol version",
+            "2": "Client ID rejected",
+            "3": "Broker unavailable",
+            "4": "Bad username or password",
+            "5": "Not authorized"
+        };
+
+        function mqttStatusText(data) {
+            if (!data.mqtt_broker) return "Not configured";
+            if (data.mqtt_connected) return "Connected";
+            return "Not connected — " + (MQTT_STATES[data.mqtt_state] || "unknown error");
+        }
 
         // UI Helpers
         function switchTab(tabId) {
@@ -275,7 +313,9 @@ const char index_html[] PROGMEM = R"rawliteral(
 
                 document.getElementById('val-time').innerText = data.current_time || "--";
                 document.getElementById('val-ip').innerText = data.ip || "--";
-                document.getElementById('val-mqtt').innerText = data.mqtt_broker || "Not Set";
+                document.getElementById('val-mqtt').innerText = data.mqtt_broker
+                    ? data.mqtt_broker + (data.mqtt_connected ? " ✓" : " ✗")
+                    : "Not Set";
                 
                 document.getElementById('val-temp-w').innerText = data.temp_water < -100 ? "N/A" : data.temp_water.toFixed(1) + " °F";
                 document.getElementById('val-temp-a').innerText = data.temp_air < -100 ? "N/A" : data.temp_air.toFixed(1) + " °F";
@@ -430,6 +470,13 @@ const char index_html[] PROGMEM = R"rawliteral(
                 document.getElementById('wifi-ssid').value = data.ssid || "";
                 document.getElementById('mqtt-broker').value = data.mqtt_broker || "";
                 document.getElementById('mqtt-port').value = data.mqtt_port || "1883";
+                document.getElementById('mqtt-user').value = data.mqtt_user || "";
+                // The saved password is never sent to the browser; the field stays
+                // blank and its placeholder reports whether one exists.
+                const passField = document.getElementById('mqtt-pass');
+                passField.value = "";
+                passField.placeholder = data.mqtt_pass_set ? "Saved — blank keeps it" : "Enter password";
+                document.getElementById('mqtt-status').innerText = mqttStatusText(data);
             } catch (err) { console.error("Failed to load network settings"); }
         }
 
@@ -447,8 +494,14 @@ const char index_html[] PROGMEM = R"rawliteral(
         async function saveMQTT() {
             const mBroker = document.getElementById('mqtt-broker').value;
             const mPort = parseInt(document.getElementById('mqtt-port').value) || 1883;
+            const mUser = document.getElementById('mqtt-user').value.trim();
+            const mPass = document.getElementById('mqtt-pass').value;
+            const payload = { mqtt_broker: mBroker, mqtt_port: mPort, mqtt_user: mUser };
+            // Only send the password when the user actually typed one, so a blank
+            // field leaves the stored password untouched.
+            if (mPass) payload.mqtt_pass = mPass;
             try {
-                const res = await fetch('/api/wifi', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mqtt_broker: mBroker, mqtt_port: mPort }) });
+                const res = await fetch('/api/wifi', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
                 if (res.ok) { showToast("MQTT updated! Rebooting..."); setTimeout(() => window.location.reload(), 5000); }
                 else showToast("Failed to update MQTT.", true);
             } catch (err) { showToast("Network error.", true); }

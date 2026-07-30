@@ -57,7 +57,12 @@ Once the board is connected to your router, you need to configure the MQTT trans
 2. Open a web browser and navigate to that IP address to load the built-in **Web Admin Dashboard**.
 3. Click on the **Network** tab.
 4. Under the **MQTT Configuration** section, enter the IP address and Port (default `1883`) of your Home Assistant MQTT Broker.
-5. Click **Update MQTT & Reboot**.
+5. If your broker requires authentication (Mosquitto defaults to `allow_anonymous false`, which is how the Home Assistant Mosquitto add-on ships), enter the **Username** and **Password** as well. Leave the username blank for a broker that still permits anonymous connections.
+6. Click **Update MQTT & Reboot**.
+
+The **Broker Status** line on the same card reports the live connection state after the reboot, so a rejected login shows up as *"Bad username or password"* rather than silent failure. The same state is mirrored next to the broker IP on the Dashboard (`✓` / `✗`).
+
+*(Note: The saved password is never sent back to the browser. Re-saving with the password field left blank keeps the stored password; clearing the username field deletes both credentials and reverts to an anonymous connection.)*
 
 ### 5. Home Assistant Integration
 This controller utilizes MQTT Auto-Discovery. You do not need to edit any YAML files.

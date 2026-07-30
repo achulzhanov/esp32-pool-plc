@@ -4,34 +4,73 @@
 // Scoped instance for the callback
 static PoolMQTT* globalMqttInstance = nullptr;
 
-PoolMQTT::PoolMQTT(PoolLogic& logic) : _logic(logic), _mqtt(_wifiClient) {
+// Human-readable form of PubSubClient::state(), so a rejected login is obvious
+// on the serial console instead of a bare number.
+static const char* mqttStateText(int state) {
+    switch (state) {
+        case -4: return "connection timeout";
+        case -3: return "connection lost";
+        case -2: return "cannot reach broker";
+        case -1: return "disconnected";
+        case 0:  return "connected";
+        case 1:  return "bad protocol version";
+        case 2:  return "client ID rejected";
+        case 3:  return "broker unavailable";
+        case 4:  return "bad username or password";
+        case 5:  return "not authorized";
+        default: return "unknown";
+    }
+}
+
+PoolMQTT::PoolMQTT(PoolLogic& logic, PoolNetworkManager& netMgr)
+    : _mqtt(_wifiClient), _logic(logic), _netMgr(netMgr) {
     globalMqttInstance = this;
+    _brokerIp[0] = '\0';
+    _brokerUser[0] = '\0';
+    _brokerPass[0] = '\0';
 }
 
 void PoolMQTT::begin() {
     _mqtt.setBufferSize(1024);
+    // Cap the CONNACK/read wait well under the 5s hardware watchdog. A broker that
+    // rejects the login by silently dropping the socket would otherwise block the
+    // main loop for the PubSubClient default of 15s and panic-reset the board.
+    _mqtt.setSocketTimeout(2);
+
     Preferences prefs;
-    prefs.begin("pool_net", true); 
-    std::string ip = prefs.getString("mqtt_broker", "").c_str();
+    prefs.begin("pool_net", true);
+    // snprintf (rather than strncpy) always null-terminates, even on overflow.
+    snprintf(_brokerIp, sizeof(_brokerIp), "%s", prefs.getString("mqtt_broker", "").c_str());
+    snprintf(_brokerUser, sizeof(_brokerUser), "%s", prefs.getString("mqtt_user", "").c_str());
+    snprintf(_brokerPass, sizeof(_brokerPass), "%s", prefs.getString("mqtt_pass", "").c_str());
     _brokerPort = prefs.getInt("mqtt_port", 1883);
     prefs.end();
-    
-    if (!ip.empty()) {
-        strncpy(_brokerIp, ip.c_str(), sizeof(_brokerIp));
+
+    if (strlen(_brokerIp) > 0) {
         _mqtt.setServer(_brokerIp, _brokerPort);
+        Serial.printf("MQTT broker %s:%d, auth: %s\n", _brokerIp, _brokerPort,
+                      strlen(_brokerUser) > 0 ? _brokerUser : "anonymous");
     } else {
         Serial.println("MQTT Broker IP not set in NVS!");
     }
-    
+
     _mqtt.setCallback([](char* topic, byte* payload, unsigned int length) {
         if (globalMqttInstance) globalMqttInstance->handleCommand(topic, payload, length);
     });
 }
 
 void PoolMQTT::loop() {
-    if (WiFi.status() != WL_CONNECTED || strlen(_brokerIp) == 0) return;
+    // Ask the network manager rather than WiFi.status(): the controller may hold a
+    // routable IP over Ethernet, over Wi-Fi, or (after a failover) both.
+    if (!_netMgr.isConnected() || strlen(_brokerIp) == 0) return;
     if (!_mqtt.connected()) {
-        reconnect();
+        // Throttle retries. A broker that refuses our credentials will reject every
+        // attempt, and hammering it once per loop iteration would starve the rest
+        // of the pool logic of CPU time.
+        if (millis() - _lastReconnectAttempt > 5000) {
+            _lastReconnectAttempt = millis();
+            reconnect();
+        }
     } else {
         _mqtt.loop();
         if (millis() - _lastStatusPublish > 15000) {
@@ -41,9 +80,23 @@ void PoolMQTT::loop() {
     }
 }
 
+bool PoolMQTT::isConnected() {
+    return _mqtt.connected();
+}
+
+int PoolMQTT::getState() {
+    return _mqtt.state();
+}
+
 void PoolMQTT::reconnect() {
-    Serial.println("Attempting MQTT connection...");
-    if (_mqtt.connect("KinConyPoolController", NULL, NULL, "pool/availability", 0, true, "offline")) {
+    // PubSubClient reads a NULL username as "send no credentials", which keeps
+    // working against brokers that still allow anonymous connections.
+    const char* user = strlen(_brokerUser) > 0 ? _brokerUser : NULL;
+    const char* pass = strlen(_brokerPass) > 0 ? _brokerPass : NULL;
+
+    Serial.printf("Attempting MQTT connection to %s:%d as %s...\n",
+                  _brokerIp, _brokerPort, user ? user : "anonymous");
+    if (_mqtt.connect("KinConyPoolController", user, pass, "pool/availability", 0, true, "offline")) {
         Serial.println("MQTT connected!");
         // We push global availability FIRST so the specific climate entities don't glitch
         _mqtt.publish("pool/availability", "online", true);
@@ -51,8 +104,11 @@ void PoolMQTT::reconnect() {
         _mqtt.subscribe("pool/+/+/set"); 
         _mqtt.subscribe("pool/+/set");    
         
-        publishDiscovery(); 
-        publishStatus();    
+        publishDiscovery();
+        publishStatus();
+    } else {
+        Serial.printf("MQTT connect failed: %s (state %d)\n",
+                      mqttStateText(_mqtt.state()), _mqtt.state());
     }
 }
 

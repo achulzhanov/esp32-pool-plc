@@ -13,7 +13,7 @@ KinConyPLC plc;
 PoolNetworkManager netMgr;
 PoolLogic logic(plc, netMgr);
 PoolWebServer webServer(logic, netMgr);
-PoolMQTT mqttClient(logic);
+PoolMQTT mqttClient(logic, netMgr);
 
 // Watchdog timeout in seconds
 #define WDT_TIMEOUT 5 
@@ -32,9 +32,10 @@ void setup() {
     esp_task_wdt_reconfigure(&wdt_config);
     esp_task_wdt_add(NULL);
 
-    plc.begin(); 
+    plc.begin();
     netMgr.begin();
     logic.begin();
+    webServer.setMQTT(mqttClient); // Lets /api/status report broker connection state
     webServer.begin();
     mqttClient.begin();
     

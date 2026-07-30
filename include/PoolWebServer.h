@@ -6,6 +6,7 @@
 #include <WiFiClient.h>
 #include "PoolLogic.h"
 #include "PoolNetworkManager.h"
+#include "PoolMQTT.h"
 
 class PoolWebServer {
 public:
@@ -13,9 +14,14 @@ public:
     void begin();
     void loop();
 
+    // Optional: lets /api/status report live broker connection state.
+    // Wired up in main.cpp after both globals are constructed.
+    void setMQTT(PoolMQTT& mqtt);
+
 private:
     PoolLogic& _poolLogic;
     PoolNetworkManager& _netMgr;
+    PoolMQTT* _mqtt = nullptr;
     WebServer _server;
 
     bool _pendingRestart = false;

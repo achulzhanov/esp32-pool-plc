@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <Preferences.h>
 #include <string>
+#include "PoolLogging.h"
 #include "KinConyPLC.h"
 #include "PoolNetworkManager.h"
 
